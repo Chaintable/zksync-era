@@ -830,6 +830,13 @@ impl StorageLogsDal<'_, '_> {
         .await
         .unwrap();
     }
+
+    pub async fn vacuum_storage_logs_full(&mut self) {
+        sqlx::query("VACUUM FULL storage_logs")
+            .execute(self.storage.conn())
+            .await
+            .unwrap();
+    }
 }
 
 #[cfg(test)]

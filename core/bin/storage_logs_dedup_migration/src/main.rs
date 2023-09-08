@@ -152,19 +152,22 @@ async fn main() {
             println!("Deduplicated logs for miniblock {miniblock_number}, number of unvacuumed rows {number_of_unvacuum_rows}");
         }
 
-        if number_of_unvacuum_rows > UNVACUUMED_ROWS_THRESHOLD {
-            let started_at = std::time::Instant::now();
-            println!("Starting vacuuming");
-            connection.storage_logs_dal().vacuum_storage_logs().await;
-            number_of_unvacuum_rows = 0;
-            println!("Vacuum finished in {:?}", started_at.elapsed());
-        }
+        // if number_of_unvacuum_rows > UNVACUUMED_ROWS_THRESHOLD {
+        //     let started_at = std::time::Instant::now();
+        //     println!("Starting vacuuming");
+        //     connection.storage_logs_dal().vacuum_storage_logs().await;
+        //     number_of_unvacuum_rows = 0;
+        //     println!("Vacuum finished in {:?}", started_at.elapsed());
+        // }
     }
 
     if number_of_unvacuum_rows > 0 {
         let started_at = std::time::Instant::now();
         println!("Starting vacuuming");
-        connection.storage_logs_dal().vacuum_storage_logs().await;
+        connection
+            .storage_logs_dal()
+            .vacuum_storage_logs_full()
+            .await;
         println!("Vacuum finished in {:?}", started_at.elapsed());
     }
 
