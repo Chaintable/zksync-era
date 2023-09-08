@@ -340,7 +340,7 @@ pub(crate) enum BlockArgsError {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BlockArgs {
     block_id: api::BlockId,
-    resolved_block_number: L2BlockNumber,
+    pub resolved_block_number: L2BlockNumber,
     l1_batch_timestamp_s: Option<u64>,
 }
 

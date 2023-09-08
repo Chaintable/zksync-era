@@ -219,6 +219,7 @@ impl<DB: PruneDatabase> MerkleTreePruner<DB> {
             }
             wait_interval = self.poll_interval;
         }
+        tracing::info!("Stopped Merkle tree pruner");
     }
 }
 

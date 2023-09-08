@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{de, ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer};
 use strum::Display;
 use zksync_basic_types::{
     web3::types::{Bytes, H160, H256, H64, U256, U64},
@@ -604,6 +604,7 @@ pub enum DebugCallType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DebugCall {
+    #[serde(rename = "type")]
     pub r#type: DebugCallType,
     pub from: Address,
     pub to: Address,
@@ -735,4 +736,260 @@ pub struct StorageProof {
 pub struct Proof {
     pub address: Address,
     pub storage_proof: Vec<StorageProof>,
+}
+
+/// OpenEthereum-style's Call type.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenEthCallType {
+    /// None
+    None,
+    /// Call
+    Call,
+    /// Call code
+    CallCode,
+    /// Delegate call
+    DelegateCall,
+    /// Static call
+    StaticCall,
+}
+
+/// OpenEthereum-style's Call response
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenEthCall {
+    /// Sender
+    pub from: Address,
+    /// Recipient
+    pub to: Address,
+    /// Transfered Value
+    pub value: U256,
+    /// Gas
+    pub gas: U256,
+    /// Input data
+    pub input: Bytes,
+    /// The type of the call.
+    pub call_type: OpenEthCallType,
+}
+
+/// OpenEthereum-style's Create response
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenEthCreate {
+    /// Sender
+    pub from: Address,
+    /// Value
+    pub value: U256,
+    /// Gas
+    pub gas: U256,
+    /// Initialization code
+    pub init: Bytes,
+}
+
+/// OpenEthereum-style's Action
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum OpenEthAction {
+    /// Call
+    Call(OpenEthCall),
+    /// Create
+    Create(OpenEthCreate),
+}
+
+/// OpenEthereum-style's Call Result
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenEthCallResult {
+    /// Gas used
+    pub gas_used: U256,
+    /// Output bytes
+    pub output: Bytes,
+}
+
+/// OpenEthereum-style's Craete Result
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenEthCreateResult {
+    /// Gas used
+    pub gas_used: U256,
+    /// Code
+    pub code: Bytes,
+    /// Assigned address
+    pub address: H160,
+}
+
+/// OpenEthereum-style's Result
+#[derive(Clone, Debug, Deserialize)]
+pub enum OpenEthRes {
+    /// Call
+    Call(OpenEthCallResult),
+    /// Create
+    Create(OpenEthCreateResult),
+    /// Call/Create failure
+    Err(String),
+    /// Non
+    Suicide,
+}
+
+/// OpenEthereum-style's ActionTrace
+#[derive(Clone, Debug, Deserialize)]
+pub struct OpenEthActionTrace {
+    /// Action
+    pub action: OpenEthAction,
+    /// Result
+    pub result: OpenEthRes,
+    /// Trace address
+    pub trace_address: Vec<usize>,
+    /// Subtraces
+    pub subtraces: usize,
+    /// Transaction position
+    pub transaction_position: usize,
+    /// Transaction hash
+    pub transaction_hash: H256,
+    /// Block Number
+    pub block_number: u64,
+    /// Block Hash
+    pub block_hash: H256,
+}
+
+impl Serialize for OpenEthActionTrace {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut struct_serializer = serializer.serialize_struct("ActionTrace", 9)?;
+        match self.action {
+            OpenEthAction::Call(ref call) => {
+                struct_serializer.serialize_field("type", "call")?;
+                struct_serializer.serialize_field("action", call)?;
+            }
+            OpenEthAction::Create(ref create) => {
+                struct_serializer.serialize_field("type", "create")?;
+                struct_serializer.serialize_field("action", create)?;
+            }
+        }
+
+        match self.result {
+            OpenEthRes::Call(ref call) => struct_serializer.serialize_field("result", call)?,
+            OpenEthRes::Create(ref create) => {
+                struct_serializer.serialize_field("result", create)?
+            }
+            OpenEthRes::Err(ref err) => struct_serializer.serialize_field("error", err)?,
+            OpenEthRes::Suicide => {
+                struct_serializer.serialize_field("result", &None as &Option<u8>)?
+            }
+        }
+
+        struct_serializer.serialize_field("traceAddress", &self.trace_address)?;
+        struct_serializer.serialize_field("subtraces", &self.subtraces)?;
+        struct_serializer.serialize_field("transactionPosition", &self.transaction_position)?;
+        struct_serializer.serialize_field("transactionHash", &self.transaction_hash)?;
+        struct_serializer.serialize_field("blockNumber", &self.block_number)?;
+        struct_serializer.serialize_field("blockHash", &self.block_hash)?;
+
+        struct_serializer.end()
+    }
+}
+
+pub fn set_zero(call: &mut DebugCall) {
+    for sub_call in call.calls.iter_mut() {
+        set_zero(sub_call);
+        if call.r#type == DebugCallType::Call
+            && call.from == sub_call.from
+            && call.to == sub_call.to
+            && call.value == sub_call.value
+        {
+            sub_call.value = U256::zero();
+        }
+        if call.r#type == DebugCallType::Call
+            && call.from == sub_call.from
+            && call.value == sub_call.value
+            && sub_call.r#type == DebugCallType::Create
+        {
+            sub_call.value = U256::zero();
+        }
+    }
+}
+
+/// flat_call
+pub fn flat_call(
+    mut call: DebugCall,
+    transaction_position: usize,
+    transaction_hash: H256,
+    block_number: u64,
+    block_hash: H256,
+    trace_address: &mut Vec<usize>,
+) -> Vec<OpenEthActionTrace> {
+    let mut res = Vec::new();
+    set_zero(&mut call);
+    match call.r#type {
+        DebugCallType::Call => {
+            let eth_call = OpenEthCall {
+                from: call.from,
+                to: call.to,
+                value: call.value,
+                gas: call.gas.into(),
+                input: call.input.into(),
+                call_type: OpenEthCallType::Call,
+            };
+
+            let call_res = match call.error {
+                None => OpenEthRes::Call(OpenEthCallResult {
+                    gas_used: call.gas_used.into(),
+                    output: call.output.into(),
+                }),
+                Some(err) => OpenEthRes::Err(err),
+            };
+            let action_trace = OpenEthActionTrace {
+                action: OpenEthAction::Call(eth_call),
+                result: call_res,
+                trace_address: trace_address.clone(),
+                subtraces: call.calls.len(),
+                transaction_position,
+                transaction_hash,
+                block_number,
+                block_hash,
+            };
+            res.push(action_trace);
+        }
+        DebugCallType::Create => {
+            let eth_create = OpenEthCreate {
+                from: call.from,
+                value: call.value,
+                gas: call.gas.into(),
+                init: call.input.into(),
+            };
+            let create_res = match call.error {
+                None => OpenEthRes::Create(OpenEthCreateResult {
+                    gas_used: call.gas_used.into(),
+                    code: call.output.into(),
+                    address: call.to,
+                }),
+                Some(err) => OpenEthRes::Err(err),
+            };
+            let action_trace = OpenEthActionTrace {
+                action: OpenEthAction::Create(eth_create),
+                result: create_res,
+                trace_address: trace_address.clone(),
+                subtraces: call.calls.len(),
+                transaction_position,
+                transaction_hash,
+                block_number,
+                block_hash,
+            };
+            res.push(action_trace);
+        }
+    }
+    for (i, sub_call) in call.calls.into_iter().enumerate() {
+        trace_address.push(i);
+        res.append(&mut flat_call(
+            sub_call,
+            transaction_position,
+            transaction_hash,
+            block_number,
+            block_hash,
+            trace_address,
+        ));
+        trace_address.pop();
+    }
+    res
 }
