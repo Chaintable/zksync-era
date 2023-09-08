@@ -156,7 +156,7 @@ impl<DB: PruneDatabase> MerkleTreePruner<DB> {
                 }
             } else {
                 tracing::debug!("No pruning required per specified policies; waiting");
-                self.poll_interval
+                break;
             };
 
             match self.aborted_receiver.recv_timeout(timeout) {
@@ -170,6 +170,7 @@ impl<DB: PruneDatabase> MerkleTreePruner<DB> {
                 }
             }
         }
+        tracing::info!("Stopped Merkle tree pruner");
     }
 }
 

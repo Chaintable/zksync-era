@@ -4,7 +4,9 @@ use multivm::{interface::ExecutionResult, vm_latest::constants::BLOCK_GAS_LIMIT}
 use once_cell::sync::OnceCell;
 use zksync_system_constants::MAX_ENCODED_TX_SIZE;
 use zksync_types::{
-    api::{BlockId, BlockNumber, DebugCall, ResultDebugCall, TracerConfig},
+    api::{
+        BlockId, BlockNumber, DebugCall, Log, ResultDebugCall, TracerConfig, TransactionReceipt,
+    },
     fee_model::BatchFeeInput,
     l2::L2Tx,
     transaction_request::CallRequest,
@@ -227,5 +229,109 @@ impl DebugNamespace {
             validation_computational_gas_limit: BLOCK_GAS_LIMIT,
             chain_id: sender_config.chain_id,
         }
+    }
+
+    pub async fn debug_trace_get_log_impl(
+        &self,
+        request: CallRequest,
+        block_id: Option<BlockId>,
+    ) -> Result<TransactionReceipt, Web3Error> {
+        const METHOD_NAME: &str = "debug_trace_get_log";
+        let block_id = block_id.unwrap_or(BlockId::Number(BlockNumber::Pending));
+
+        let mut connection = self
+            .state
+            .connection_pool
+            .access_storage_tagged("api")
+            .await
+            .map_err(|err| internal_error(METHOD_NAME, err))?;
+        let block_args = self
+            .state
+            .resolve_block_args(&mut connection, block_id, METHOD_NAME)
+            .await?;
+        let block_hash = connection
+            .blocks_web3_dal()
+            .get_miniblock_hash(block_args.resolved_block_number)
+            .await
+            .map_err(|err| internal_error(METHOD_NAME, err))?;
+        drop(connection);
+
+        let tx = L2Tx::from_request(request.clone().into(), MAX_ENCODED_TX_SIZE)?;
+
+        let shared_args = self.shared_args();
+        let vm_permit = self
+            .state
+            .tx_sender
+            .vm_concurrency_limiter()
+            .acquire()
+            .await;
+        let vm_permit = vm_permit.ok_or(Web3Error::InternalError)?;
+
+        // We don't need properly trace if we only need top call
+        let call_tracer_result = Arc::new(OnceCell::default());
+        let custom_tracers = vec![ApiTracer::CallTracer(call_tracer_result.clone())];
+
+        let executor = &self.state.tx_sender.0.executor;
+        let result = executor
+            .execute_tx_eth_call(
+                vm_permit,
+                shared_args,
+                self.state.connection_pool.clone(),
+                tx.clone(),
+                block_args,
+                self.sender_config().vm_execution_cache_misses_limit,
+                custom_tracers,
+            )
+            .await
+            .map_err(|err| internal_error(METHOD_NAME, err))?;
+
+        let mut logs = vec![];
+        let mut transaction_log_index: u32 = 0;
+
+        let transaction_hash = H256::random();
+
+        for log in result.logs.events {
+            logs.push(Log {
+                l1_batch_number: Some(log.location.0 .0.into()),
+                address: log.address,
+                topics: log.indexed_topics,
+                data: log.value.into(),
+                block_hash,
+                block_number: Some(block_args.resolved_block_number.0.into()),
+                transaction_hash: Some(transaction_hash),
+                transaction_index: Some(Default::default()),
+                log_index: Some(transaction_log_index.into()),
+                transaction_log_index: Some(1.into()),
+                log_type: None,
+                removed: Some(false),
+            });
+            transaction_log_index += 1;
+        }
+
+        let from = request.from.clone().unwrap_or_default();
+        let to = request.to.clone();
+
+        let receipt = TransactionReceipt {
+            transaction_hash,
+            transaction_index: Default::default(),
+            block_hash: block_hash.unwrap_or_default(),
+            block_number: block_args.resolved_block_number.0.into(),
+            from,
+            to,
+            gas_used: Some(result.statistics.gas_used.into()),
+            cumulative_gas_used: result.statistics.gas_used.into(),
+            contract_address: None,
+            logs,
+            logs_bloom: Default::default(),
+            status: 1.into(),
+            root: Default::default(),
+            effective_gas_price: Default::default(),
+            l1_batch_tx_index: Default::default(),
+            l1_batch_number: Default::default(),
+            l2_to_l1_logs: Default::default(),
+            transaction_type: Default::default(),
+        };
+
+        Ok(receipt)
     }
 }
