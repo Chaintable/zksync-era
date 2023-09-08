@@ -4,6 +4,7 @@ members = [
     "core/bin/block_reverter",
     "core/bin/contract-verifier",
     "core/bin/external_node",
+    "core/bin/external_trace",
     "core/bin/merkle_tree_consistency_checker",
     "core/bin/snapshots_creator",
     "core/bin/system-constants-generator",
