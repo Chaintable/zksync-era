@@ -1,0 +1,27 @@
+name: "Build new trace"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-artifacts:
+    runs-on: [self-hosted, ops]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          persist-credentials: false
+
+      - name: Install latest nightly
+        uses: actions-rs/toolchain@v1
+        with:
+            toolchain: nightly
+            override: true
+            components: rustfmt, clippy
+
+      - name: Docker build and push
+        run: |
+          docker build -t 294354037686.dkr.ecr.ap-northeast-1.amazonaws.com/zksync_external_trace:${GITHUB_SHA::8} -f docker/external-trace/Dockerfile .
+          docker push 294354037686.dkr.ecr.ap-northeast-1.amazonaws.com/zksync_external_trace:${GITHUB_SHA::8}
+
+    
