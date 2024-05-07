@@ -29,10 +29,10 @@ pub trait PreApi {
         block: Option<BlockId>,
     ) -> RpcResult<TransactionReceipt>;
 
-    #[method(name = "pre_traceMany")]
+    #[method(name = "traceMany")]
     async fn pre_trace_many(
         &self,
         requests: Vec<CallRequest>,
         block: Option<BlockId>,
-    ) -> RpcResult<Vec<PreResult>>;
+    ) -> RpcResult<serde_json::Value>;
 }

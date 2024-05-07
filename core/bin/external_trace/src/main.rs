@@ -138,7 +138,7 @@ impl PreApiServer for PreApiImpl {
         &self,
         requests: Vec<CallRequest>,
         block: Option<BlockId>,
-    ) -> RpcResult<Vec<PreResult>> {
+    ) -> RpcResult<serde_json::Value> {
         let res = self
             .client
             .debug_trace_many(requests, block)
