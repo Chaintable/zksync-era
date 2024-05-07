@@ -1,6 +1,6 @@
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use zksync_types::{
-    api::{BlockId, DebugCall, TracerConfig, TransactionReceipt},
+    api::{BlockId, DebugCall, PreResult, TracerConfig, TransactionReceipt},
     transaction_request::CallRequest,
     H256,
 };
@@ -25,4 +25,11 @@ pub trait DebugApi {
         request: CallRequest,
         block: Option<BlockId>,
     ) -> RpcResult<TransactionReceipt>;
+
+    #[method(name = "traceMany")]
+    async fn debug_trace_many(
+        &self,
+        requests: Vec<CallRequest>,
+        block: Option<BlockId>,
+    ) -> RpcResult<Vec<PreResult>>;
 }
