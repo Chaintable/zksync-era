@@ -1,10 +1,10 @@
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+use serde_json::Value;
 use zksync_types::{
     api::{BlockId, DebugCall, PreResult, TracerConfig, TransactionReceipt},
     transaction_request::CallRequest,
     H256,
 };
-
 #[rpc(server, client, namespace = "debug")]
 #[async_trait::async_trait]
 pub trait DebugApi {
@@ -31,5 +31,5 @@ pub trait DebugApi {
         &self,
         requests: Vec<CallRequest>,
         block: Option<BlockId>,
-    ) -> RpcResult<Vec<PreResult>>;
+    ) -> RpcResult<Value>;
 }
