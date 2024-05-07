@@ -2032,6 +2032,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "jsonrpsee 0.18.2",
+ "serde_json",
  "tokio",
  "zksync_core",
  "zksync_types",
