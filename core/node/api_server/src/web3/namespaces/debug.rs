@@ -7,7 +7,8 @@ use zksync_dal::{CoreDal, DalError};
 use zksync_system_constants::MAX_ENCODED_TX_SIZE;
 use zksync_types::{
     api::{
-        BlockId, BlockNumber, DebugCall, Log, ResultDebugCall, TracerConfig, TransactionReceipt,
+        flat_call, BlockId, BlockNumber, DebugCall, Log, PreError, PreResult, ResultDebugCall,
+        TracerConfig, TransactionReceipt,
     },
     debug_flat_call::{flatten_debug_calls, DebugCallFlat},
     fee_model::BatchFeeInput,
@@ -343,5 +344,149 @@ impl DebugNamespace {
         };
 
         Ok(receipt)
+    }
+
+    pub async fn debug_pre_trace_many_impl(
+        &self,
+        requests: Vec<CallRequest>,
+        block_id: Option<BlockId>,
+    ) -> Result<Vec<PreResult>, Web3Error> {
+        let block_id = block_id.unwrap_or(BlockId::Number(BlockNumber::Latest));
+        self.current_method().set_block_id(block_id);
+        let mut connection = self.state.acquire_connection().await?;
+        let block_args = self
+            .state
+            .resolve_block_args(&mut connection, block_id)
+            .await?;
+        let block_hash = connection
+            .blocks_web3_dal()
+            .get_l2_block_hash(block_args.resolved_block_number)
+            .await
+            .map_err(|_| Web3Error::NoBlock)?;
+        drop(connection);
+
+        self.current_method().set_block_diff(
+            self.state
+                .last_sealed_l2_block
+                .diff_with_block_args(&block_args),
+        );
+
+        let txs = requests
+            .into_iter()
+            .map(|request| L2Tx::from_request(request.into(), MAX_ENCODED_TX_SIZE))
+            .collect::<Result<Vec<_>, _>>()?;
+        let shared_args = self.shared_args().await;
+        let vm_permit = self
+            .state
+            .tx_sender
+            .vm_concurrency_limiter()
+            .acquire()
+            .await;
+        let vm_permit = vm_permit.context("cannot acquire VM permit")?;
+
+        // We don't need properly trace if we only need top call
+        let executor = &self.state.tx_sender.0.executor;
+        let results = executor
+            .execute_txs_eth_call(
+                vm_permit,
+                shared_args,
+                self.state.connection_pool.clone(),
+                txs.clone(),
+                block_args,
+                self.sender_config().vm_execution_cache_misses_limit,
+            )
+            .await?;
+        let mut pre_res_vec = vec![];
+        if results.len() != txs.len() {
+            let pre_error = PreError {
+                msg: "Results count does not match requests count".to_string(),
+                code: 1000,
+            };
+            let pre_res = PreResult {
+                error: pre_error,
+                ..Default::default()
+            };
+            pre_res_vec.push(pre_res);
+            return Ok(pre_res_vec);
+        }
+        let mut tx_index = 0;
+        for ((result, calls), tx) in results.into_iter().zip(txs) {
+            let (output, revert_reason) = match result.result {
+                ExecutionResult::Success { output, .. } => (output, None),
+                ExecutionResult::Revert { output } => {
+                    let pre_error = PreError {
+                        msg: output.to_string(),
+                        code: 1002,
+                    };
+                    let pre_res = PreResult {
+                        error: pre_error,
+                        ..Default::default()
+                    };
+                    pre_res_vec.push(pre_res);
+                    tx_index += 1;
+                    continue;
+                }
+                ExecutionResult::Halt { reason } => {
+                    let pre_error = PreError {
+                        msg: reason.to_string(),
+                        code: 1000,
+                    };
+                    let pre_res = PreResult {
+                        error: pre_error,
+                        ..Default::default()
+                    };
+                    pre_res_vec.push(pre_res);
+                    tx_index += 1;
+                    continue;
+                }
+            };
+            let gas_used = result.statistics.gas_used;
+            let mut logs = vec![];
+            let mut transaction_log_index: u32 = 0;
+            let transaction_hash = H256::random();
+            for log in result.logs.events {
+                logs.push(Log {
+                    l1_batch_number: Some(log.location.0 .0.into()),
+                    address: log.address,
+                    topics: log.indexed_topics,
+                    data: log.value.into(),
+                    block_hash,
+                    block_number: Some(block_args.resolved_block_number.0.into()),
+                    transaction_hash: Some(transaction_hash),
+                    transaction_index: Some(tx_index.into()),
+                    log_index: Some(transaction_log_index.into()),
+                    transaction_log_index: Some(transaction_log_index.into()),
+                    log_type: None,
+                    removed: Some(false),
+                });
+                transaction_log_index += 1;
+            }
+            let call = Call::new_high_level(
+                tx.common_data.fee.gas_limit.as_u64(),
+                result.statistics.gas_used,
+                tx.execute.value,
+                tx.execute.calldata,
+                output,
+                revert_reason,
+                calls,
+            );
+            let res = flat_call(
+                call.into(),
+                tx_index,
+                transaction_hash,
+                block_args.resolved_block_number.0.into(),
+                block_hash.unwrap_or_default(),
+                &mut Vec::new(),
+            );
+            let pre_res = PreResult {
+                trace: res,
+                logs,
+                gas_used: gas_used.into(),
+                error: Default::default(),
+            };
+            tx_index += 1;
+            pre_res_vec.push(pre_res);
+        }
+        Ok(pre_res_vec)
     }
 }

@@ -6,11 +6,15 @@
 //!
 //! This module is intended to be blocking.
 
+use once_cell::sync::OnceCell;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use multivm::{
-    interface::{L1BatchEnv, L2BlockEnv, SystemEnv, VmInterface},
+    interface::{L1BatchEnv, L2BlockEnv, SystemEnv, VmExecutionResultAndLogs, VmInterface},
     utils::adjust_pubdata_price_for_tx,
     vm_latest::{constants::BATCH_COMPUTATIONAL_GAS_LIMIT, HistoryDisabled},
     VmInstance,
@@ -28,6 +32,7 @@ use zksync_types::{
     fee_model::BatchFeeInput,
     get_nonce_key,
     utils::{decompose_full_nonce, nonces_to_full_nonce, storage_key_for_eth_balance},
+    vm_trace::Call,
     AccountTreeId, L1BatchNumber, L2BlockNumber, Nonce, ProtocolVersionId, StorageKey, Transaction,
     H256, U256,
 };
@@ -35,7 +40,7 @@ use zksync_utils::{h256_to_u256, time::seconds_since_epoch, u256_to_h256};
 
 use super::{
     vm_metrics::{self, SandboxStage, SANDBOX_METRICS},
-    BlockArgs, TxExecutionArgs, TxSharedArgs, VmPermit,
+    ApiTracer, BlockArgs, TxExecutionArgs, TxSharedArgs, VmPermit,
 };
 
 type BoxedVm<'a> = Box<VmInstance<StorageView<PostgresStorage<'a>>, HistoryDisabled>>;
@@ -162,6 +167,31 @@ impl<'a> Sandbox<'a> {
         };
 
         Ok((next_l2_block_info, l2_block_info_to_reset))
+    }
+
+    fn reset_storage_view(
+        l2_block_info_to_reset: StoredL2BlockInfo,
+        storage_view_ptr: StoragePtr<StorageView<PostgresStorage<'a>>>,
+    ) {
+        let mut storage_view = storage_view_ptr.borrow_mut();
+        let l2_block_info_key = StorageKey::new(
+            AccountTreeId::new(SYSTEM_CONTEXT_ADDRESS),
+            SYSTEM_CONTEXT_CURRENT_L2_BLOCK_INFO_POSITION,
+        );
+        let l2_block_info = pack_block_info(
+            l2_block_info_to_reset.l2_block_number as u64,
+            l2_block_info_to_reset.l2_block_timestamp,
+        );
+        storage_view.set_value(l2_block_info_key, u256_to_h256(l2_block_info));
+
+        let l2_block_txs_rolling_hash_key = StorageKey::new(
+            AccountTreeId::new(SYSTEM_CONTEXT_ADDRESS),
+            SYSTEM_CONTEXT_CURRENT_TX_ROLLING_HASH_POSITION,
+        );
+        storage_view.set_value(
+            l2_block_txs_rolling_hash_key,
+            l2_block_info_to_reset.txs_rolling_hash,
+        );
     }
 
     /// This method is blocking.
@@ -343,6 +373,70 @@ pub(super) fn apply_vm_in_sandbox<T>(
         storage_view.as_ref().borrow_mut().metrics(),
     );
     Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn apply_many_vm_in_sandbox(
+    vm_permit: VmPermit,
+    shared_args: TxSharedArgs,
+    // If `true`, then the batch's L1/pubdata gas price will be adjusted so that the transaction's gas per pubdata limit is <=
+    // to the one in the block. This is often helpful in case we want the transaction validation to work regardless of the
+    // current L1 prices for gas or pubdata.
+    execution_args: &TxExecutionArgs,
+    connection_pool: &ConnectionPool<Core>,
+    block_args: BlockArgs,
+    txs: Vec<Transaction>,
+) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
+    let stage_started_at = Instant::now();
+    let rt_handle = vm_permit.rt_handle();
+    let connection = rt_handle
+        .block_on(connection_pool.connection_tagged("api"))
+        .context("failed acquiring DB connection")?;
+    let connection_acquire_time = stage_started_at.elapsed();
+    // We don't want to emit too many logs.
+    if connection_acquire_time > Duration::from_millis(10) {
+        tracing::debug!("Obtained connection (took {connection_acquire_time:?})");
+    }
+
+    let sandbox = rt_handle.block_on(Sandbox::new(
+        connection,
+        shared_args,
+        execution_args,
+        block_args,
+    ))?;
+
+    let protocol_version = sandbox.system_env.version;
+    let storage_view = sandbox.storage_view.to_rc_ptr();
+    let l1_batch_env = sandbox.l1_batch_env;
+    let system_env = sandbox.system_env;
+    let mut results = Vec::with_capacity(txs.len());
+    for tx in txs {
+        Sandbox::reset_storage_view(
+            sandbox.l2_block_info_to_reset.unwrap(),
+            storage_view.clone(),
+        );
+        let mut vm: Box<VmInstance<StorageView<PostgresStorage>, HistoryDisabled>> =
+            Box::new(VmInstance::new_with_specific_version(
+                l1_batch_env.clone(),
+                system_env.clone(),
+                storage_view.clone(),
+                protocol_version.into_api_vm_version(),
+            ));
+        let call_tracer_result = Arc::new(OnceCell::default());
+        let custom_tracers: Vec<_> =
+            vec![ApiTracer::CallTracer(call_tracer_result.clone()).into_boxed()]
+                .into_iter()
+                .collect();
+        let result = vm
+            .inspect_transaction_with_bytecode_compression(custom_tracers.into(), tx.into(), true)
+            .1;
+        let trace = Arc::try_unwrap(call_tracer_result)
+            .unwrap()
+            .take()
+            .unwrap_or_default();
+        results.push((result, trace));
+    }
+    Ok(results)
 }
 
 #[derive(Debug, Clone, Copy)]

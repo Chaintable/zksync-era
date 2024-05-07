@@ -1,6 +1,7 @@
 //! Implementation of "executing" methods, e.g. `eth_call`.
 
 use anyhow::Context as _;
+use itertools::Itertools;
 use multivm::{
     interface::{TxExecutionMode, VmExecutionResultAndLogs, VmInterface},
     tracers::StorageInvocations,
@@ -11,6 +12,7 @@ use zksync_dal::{ConnectionPool, Core};
 use zksync_types::{
     fee::TransactionExecutionMetrics, l2::L2Tx, transaction_request::CallOverrides,
     ExecuteTransactionCommon, Nonce, PackedEthSignature, Transaction, U256,
+    vm_trace::Call, ExecuteTransactionCommon
 };
 
 use super::{
@@ -197,5 +199,41 @@ impl TransactionExecutor {
             )
             .await?;
         Ok(output.vm)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_txs_eth_call(
+        &self,
+        vm_permit: VmPermit,
+        shared_args: TxSharedArgs,
+        connection_pool: ConnectionPool<Core>,
+        mut txs: Vec<L2Tx>,
+        block_args: BlockArgs,
+        vm_execution_cache_misses_limit: Option<usize>,
+    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
+        let enforced_base_fee = txs[0].common_data.fee.max_fee_per_gas.as_u64();
+        let execution_args =
+            TxExecutionArgs::for_eth_call(enforced_base_fee, vm_execution_cache_misses_limit);
+
+        for tx in &mut txs {
+            if tx.common_data.signature.is_empty() {
+                tx.common_data.signature = PackedEthSignature::default().serialize_packed().into();
+            }
+            tx.common_data.fee.gas_limit = ETH_CALL_GAS_LIMIT.into();
+        }
+        let res = tokio::task::spawn_blocking(move || {
+            let res = apply::apply_many_vm_in_sandbox(
+                vm_permit,
+                shared_args,
+                &execution_args,
+                &connection_pool,
+                block_args,
+                txs.into_iter().map(|tx| tx.into()).collect_vec(),
+            );
+            res
+        })
+        .await
+        .context("transaction execution panicked")??;
+        Ok(res)
     }
 }

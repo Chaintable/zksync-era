@@ -1,6 +1,6 @@
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use zksync_types::{
-    api::{BlockId, OpenEthActionTrace, TransactionReceipt},
+    api::{BlockId, OpenEthActionTrace, PreResult, TransactionReceipt},
     transaction_request::CallRequest,
     H256,
 };
@@ -28,4 +28,11 @@ pub trait PreApi {
         request: CallRequest,
         block: Option<BlockId>,
     ) -> RpcResult<TransactionReceipt>;
+
+    #[method(name = "pre_traceMany")]
+    async fn pre_trace_many(
+        &self,
+        requests: Vec<CallRequest>,
+        block: Option<BlockId>,
+    ) -> RpcResult<Vec<PreResult>>;
 }
