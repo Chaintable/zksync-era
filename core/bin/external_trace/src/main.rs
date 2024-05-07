@@ -6,7 +6,7 @@ use jsonrpsee::{core::RpcResult, server::ServerBuilder};
 use tokio::signal;
 use zksync_types::transaction_request::CallRequest;
 use zksync_types::{
-    api::{flat_call, BlockId, OpenEthActionTrace, TransactionReceipt},
+    api::{flat_call, BlockId, OpenEthActionTrace, PreResult, TransactionReceipt},
     H256,
 };
 
@@ -126,6 +126,22 @@ impl PreApiServer for PreApiImpl {
         let res = self
             .client
             .trace_get_log(request, block)
+            .await
+            .map_err(|e| {
+                println!("pre_get_logs Error: {:?}", e);
+                internal_rpc_err(e.to_string())
+            })?;
+        Ok(res)
+    }
+
+    async fn pre_trace_many(
+        &self,
+        requests: Vec<CallRequest>,
+        block: Option<BlockId>,
+    ) -> RpcResult<Vec<PreResult>> {
+        let res = self
+            .client
+            .debug_trace_many(requests, block)
             .await
             .map_err(|e| {
                 println!("pre_get_logs Error: {:?}", e);

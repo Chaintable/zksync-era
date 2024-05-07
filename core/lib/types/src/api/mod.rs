@@ -993,3 +993,26 @@ pub fn flat_call(
     }
     res
 }
+
+#[repr(i64)]
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub enum PreErrorCode {
+    UnKnown = 1000,
+    InsufficientBalane = 1001,
+    Reverted = 1002,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct PreError {
+    pub code: i64,
+    pub msg: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct PreResult {
+    pub trace: Vec<OpenEthActionTrace>,
+    pub logs: Vec<Log>,
+    pub error: PreError,
+    #[serde(rename = "gasUsed")]
+    pub gas_used: u64,
+}
