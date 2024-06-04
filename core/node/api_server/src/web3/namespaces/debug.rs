@@ -244,7 +244,7 @@ impl DebugNamespace {
 
     pub async fn debug_trace_get_log_impl(
         &self,
-        request: CallRequest,
+        mut request: CallRequest,
         block_id: Option<BlockId>,
     ) -> Result<TransactionReceipt, Web3Error> {
         let block_id = block_id.unwrap_or(BlockId::Number(BlockNumber::Pending));
@@ -268,6 +268,17 @@ impl DebugNamespace {
                 .diff_with_block_args(&block_args),
         );
 
+        if request.gas.is_none() {
+            request.gas = Some(
+                self.state
+                    .tx_sender
+                    .get_default_eth_call_gas(block_args)
+                    .await
+                    .map_err(Web3Error::InternalError)?
+                    .into(),
+            )
+        }
+
         let tx = L2Tx::from_request(request.clone().into(), MAX_ENCODED_TX_SIZE)?;
 
         let shared_args = self.shared_args().await;
@@ -284,11 +295,13 @@ impl DebugNamespace {
         let custom_tracers = vec![ApiTracer::CallTracer(call_tracer_result.clone())];
 
         let executor = &self.state.tx_sender.0.executor;
+        let call_overrides = request.get_call_overrides()?;
         let result = executor
             .execute_tx_eth_call(
                 vm_permit,
                 shared_args,
                 self.state.connection_pool.clone(),
+                call_overrides,
                 tx.clone(),
                 block_args,
                 self.sender_config().vm_execution_cache_misses_limit,
@@ -348,12 +361,13 @@ impl DebugNamespace {
 
     pub async fn debug_pre_trace_many_impl(
         &self,
-        requests: Vec<CallRequest>,
+        mut requests: Vec<CallRequest>,
         block_id: Option<BlockId>,
     ) -> Result<Vec<PreResult>, Web3Error> {
         let block_id = block_id.unwrap_or(BlockId::Number(BlockNumber::Latest));
         self.current_method().set_block_id(block_id);
         let mut connection = self.state.acquire_connection().await?;
+        let call_overrides = requests[0].get_call_overrides()?;
         let block_args = self
             .state
             .resolve_block_args(&mut connection, block_id)
@@ -364,12 +378,25 @@ impl DebugNamespace {
             .await
             .map_err(|_| Web3Error::NoBlock)?;
         drop(connection);
-
         self.current_method().set_block_diff(
             self.state
                 .last_sealed_l2_block
                 .diff_with_block_args(&block_args),
         );
+
+        let gas = Some(
+            self.state
+                .tx_sender
+                .get_default_eth_call_gas(block_args)
+                .await
+                .map_err(Web3Error::InternalError)?
+                .into(),
+        );
+        for request in requests.iter_mut() {
+            if request.gas.is_none() {
+                request.gas = gas.clone();
+            }
+        }
 
         let txs = requests
             .into_iter()
@@ -391,6 +418,7 @@ impl DebugNamespace {
                 vm_permit,
                 shared_args,
                 self.state.connection_pool.clone(),
+                call_overrides,
                 txs.clone(),
                 block_args,
                 self.sender_config().vm_execution_cache_misses_limit,

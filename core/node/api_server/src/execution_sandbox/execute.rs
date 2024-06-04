@@ -12,7 +12,7 @@ use zksync_dal::{ConnectionPool, Core};
 use zksync_types::{
     fee::TransactionExecutionMetrics, l2::L2Tx, transaction_request::CallOverrides,
     ExecuteTransactionCommon, Nonce, PackedEthSignature, Transaction, U256,
-    vm_trace::Call, ExecuteTransactionCommon
+    vm_trace::Call,
 };
 
 use super::{
@@ -207,19 +207,18 @@ impl TransactionExecutor {
         vm_permit: VmPermit,
         shared_args: TxSharedArgs,
         connection_pool: ConnectionPool<Core>,
+        call_overrides: CallOverrides,
         mut txs: Vec<L2Tx>,
         block_args: BlockArgs,
         vm_execution_cache_misses_limit: Option<usize>,
     ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
-        let enforced_base_fee = txs[0].common_data.fee.max_fee_per_gas.as_u64();
         let execution_args =
-            TxExecutionArgs::for_eth_call(enforced_base_fee, vm_execution_cache_misses_limit);
+            TxExecutionArgs::for_eth_call(call_overrides.enforced_base_fee, vm_execution_cache_misses_limit);
 
         for tx in &mut txs {
             if tx.common_data.signature.is_empty() {
                 tx.common_data.signature = PackedEthSignature::default().serialize_packed().into();
             }
-            tx.common_data.fee.gas_limit = ETH_CALL_GAS_LIMIT.into();
         }
         let res = tokio::task::spawn_blocking(move || {
             let res = apply::apply_many_vm_in_sandbox(

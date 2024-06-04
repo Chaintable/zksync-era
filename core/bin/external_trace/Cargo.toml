@@ -12,7 +12,6 @@ publish = false                                           # We don't want to pub
 
 [dependencies]
 jsonrpsee = { version = "0.18", features = ["server", "client", "macros"] }
-zksync_core = { path = "../../lib/zksync_core" }
 zksync_types = { path = "../../lib/types" }
 async-trait.workspace = true
 tokio.workspace = true
