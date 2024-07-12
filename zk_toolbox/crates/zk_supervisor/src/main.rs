@@ -1,13 +1,19 @@
 use clap::{Parser, Subcommand};
-use commands::database::DatabaseCommands;
+use commands::{database::DatabaseCommands, test::TestCommands};
 use common::{
-    check_prerequisites,
+    check_general_prerequisites,
     config::{global_config, init_global_config, GlobalConfig},
+    error::log_error,
     init_prompt_theme, logger,
 };
 use config::EcosystemConfig;
-use messages::msg_global_chain_does_not_exist;
+use messages::{
+    msg_global_chain_does_not_exist, MSG_SUBCOMMAND_CLEAN, MSG_SUBCOMMAND_DATABASE_ABOUT,
+    MSG_SUBCOMMAND_TESTS_ABOUT,
+};
 use xshell::Shell;
+
+use crate::commands::clean::CleanCommands;
 
 mod commands;
 mod dals;
@@ -24,9 +30,12 @@ struct Supervisor {
 
 #[derive(Subcommand, Debug)]
 enum SupervisorSubcommands {
-    /// Database related commands
-    #[command(subcommand)]
+    #[command(subcommand, about = MSG_SUBCOMMAND_DATABASE_ABOUT)]
     Database(DatabaseCommands),
+    #[command(subcommand, about = MSG_SUBCOMMAND_TESTS_ABOUT)]
+    Test(TestCommands),
+    #[command(subcommand, about = MSG_SUBCOMMAND_CLEAN)]
+    Clean(CleanCommands),
 }
 
 #[derive(Parser, Debug)]
@@ -58,27 +67,13 @@ async fn main() -> anyhow::Result<()> {
     init_global_config_inner(&shell, &args.global)?;
 
     if !global_config().ignore_prerequisites {
-        check_prerequisites(&shell);
+        check_general_prerequisites(&shell);
     }
 
     match run_subcommand(args, &shell).await {
         Ok(_) => {}
-        Err(e) => {
-            logger::error(e.to_string());
-
-            if e.chain().count() > 1 {
-                logger::error_note(
-                    "Caused by:",
-                    &e.chain()
-                        .skip(1)
-                        .enumerate()
-                        .map(|(i, cause)| format!("  {i}: {}", cause))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                );
-            }
-
-            logger::outro("Failed");
+        Err(error) => {
+            log_error(error);
             std::process::exit(1);
         }
     }
@@ -89,6 +84,8 @@ async fn main() -> anyhow::Result<()> {
 async fn run_subcommand(args: Supervisor, shell: &Shell) -> anyhow::Result<()> {
     match args.command {
         SupervisorSubcommands::Database(command) => commands::database::run(shell, command).await?,
+        SupervisorSubcommands::Test(command) => commands::test::run(shell, command)?,
+        SupervisorSubcommands::Clean(command) => commands::clean::run(shell, command)?,
     }
     Ok(())
 }

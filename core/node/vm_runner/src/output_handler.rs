@@ -16,7 +16,7 @@ use zksync_dal::{ConnectionPool, Core};
 use zksync_state_keeper::{StateKeeperOutputHandler, UpdatesManager};
 use zksync_types::L1BatchNumber;
 
-use crate::VmRunnerIo;
+use crate::{metrics::METRICS, VmRunnerIo};
 
 type BatchReceiver = oneshot::Receiver<JoinHandle<anyhow::Result<()>>>;
 
@@ -173,7 +173,10 @@ impl StateKeeperOutputHandler for AsyncOutputHandler {
             } => {
                 sender
                     .send(tokio::task::spawn(async move {
-                        handler.handle_l1_batch(updates_manager).await
+                        let latency = METRICS.output_handle_time.start();
+                        let result = handler.handle_l1_batch(updates_manager).await;
+                        latency.observe();
+                        result
                     }))
                     .ok();
                 Ok(())
@@ -203,6 +206,11 @@ impl<Io: VmRunnerIo> Debug for ConcurrentOutputHandlerFactoryTask<Io> {
 }
 
 impl<Io: VmRunnerIo> ConcurrentOutputHandlerFactoryTask<Io> {
+    /// Access the underlying [`VmRunnerIo`].
+    pub fn io(&self) -> &Io {
+        &self.io
+    }
+
     /// Starts running the task which is supposed to last until the end of the node's lifetime.
     ///
     /// # Errors
@@ -243,6 +251,9 @@ impl<Io: VmRunnerIo> ConcurrentOutputHandlerFactoryTask<Io> {
                     self.io
                         .mark_l1_batch_as_completed(&mut conn, latest_processed_batch)
                         .await?;
+                    METRICS
+                        .last_processed_batch
+                        .set(latest_processed_batch.0.into());
                 }
             }
         }

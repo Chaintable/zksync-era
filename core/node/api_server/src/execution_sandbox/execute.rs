@@ -2,17 +2,16 @@
 
 use anyhow::Context as _;
 use itertools::Itertools;
-use multivm::{
+use tracing::{span, Level};
+use zksync_dal::{ConnectionPool, Core};
+use zksync_multivm::{
     interface::{TxExecutionMode, VmExecutionResultAndLogs, VmInterface},
     tracers::StorageInvocations,
     MultiVMTracer,
 };
-use tracing::{span, Level};
-use zksync_dal::{ConnectionPool, Core};
 use zksync_types::{
-    fee::TransactionExecutionMetrics, l2::L2Tx, transaction_request::CallOverrides,
+    fee::TransactionExecutionMetrics, l2::L2Tx, transaction_request::CallOverrides, vm_trace::Call,
     ExecuteTransactionCommon, Nonce, PackedEthSignature, Transaction, U256,
-    vm_trace::Call,
 };
 
 use super::{
@@ -119,11 +118,7 @@ impl TransactionExecutor {
             return mock_executor.execute_tx(&tx, &block_args);
         }
 
-        let total_factory_deps = tx
-            .execute
-            .factory_deps
-            .as_ref()
-            .map_or(0, |deps| deps.len() as u16);
+        let total_factory_deps = tx.execute.factory_deps.len() as u16;
 
         let (published_bytecodes, execution_result) = tokio::task::spawn_blocking(move || {
             let span = span!(Level::DEBUG, "execute_in_sandbox").entered();
@@ -212,8 +207,10 @@ impl TransactionExecutor {
         block_args: BlockArgs,
         vm_execution_cache_misses_limit: Option<usize>,
     ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
-        let execution_args =
-            TxExecutionArgs::for_eth_call(call_overrides.enforced_base_fee, vm_execution_cache_misses_limit);
+        let execution_args = TxExecutionArgs::for_eth_call(
+            call_overrides.enforced_base_fee,
+            vm_execution_cache_misses_limit,
+        );
 
         for tx in &mut txs {
             if tx.common_data.signature.is_empty() {

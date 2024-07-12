@@ -3,13 +3,13 @@ pub mod gpu_socket_listener {
     use std::{net::SocketAddr, sync::Arc, time::Instant};
 
     use anyhow::Context as _;
-    use prover_dal::{ConnectionPool, Prover, ProverDal};
     use tokio::{
         io::copy,
         net::{TcpListener, TcpStream},
         sync::{watch, Notify},
     };
     use zksync_object_store::bincode;
+    use zksync_prover_dal::{ConnectionPool, Prover, ProverDal};
     use zksync_prover_fri_types::WitnessVectorArtifacts;
     use zksync_types::{
         protocol_version::ProtocolSemanticVersion,
@@ -85,7 +85,7 @@ pub mod gpu_socket_listener {
             let mut now = Instant::now();
             loop {
                 if *stop_receiver.borrow() {
-                    tracing::warn!("Stop signal received, shutting down socket listener");
+                    tracing::info!("Stop signal received, shutting down socket listener");
                     return Ok(());
                 }
                 let stream = listener
