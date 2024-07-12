@@ -1,16 +1,16 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
-use multivm::interface::L2BlockEnv;
 use tokio::{sync::watch, task::JoinHandle};
 use zksync_dal::{ConnectionPool, Core};
+use zksync_multivm::interface::L2BlockEnv;
 use zksync_state_keeper::{
     BatchExecutor, BatchExecutorHandle, ExecutionMetricsForCriteria, L2BlockParams,
     StateKeeperOutputHandler, TxExecutionResult, UpdatesManager,
 };
 use zksync_types::{block::L2BlockExecutionData, L1BatchNumber};
 
-use crate::{storage::StorageLoader, OutputHandlerFactory, VmRunnerIo};
+use crate::{metrics::METRICS, storage::StorageLoader, OutputHandlerFactory, VmRunnerIo};
 
 /// VM runner represents a logic layer of L1 batch / L2 block processing flow akin to that of state
 /// keeper. The difference is that VM runner is designed to be run on batches/blocks that have
@@ -61,6 +61,7 @@ impl VmRunner {
         mut updates_manager: UpdatesManager,
         mut output_handler: Box<dyn StateKeeperOutputHandler>,
     ) -> anyhow::Result<()> {
+        let latency = METRICS.run_vm_time.start();
         for (i, l2_block) in l2_blocks.into_iter().enumerate() {
             if i > 0 {
                 // First L2 block in every batch is already preloaded
@@ -109,10 +110,16 @@ impl VmRunner {
                 .await
                 .context("VM runner failed to handle L2 block")?;
         }
-        batch_executor
-            .finish_batch()
+
+        let (finished_batch, storage_view_cache) = batch_executor
+            .finish_batch_with_cache()
             .await
-            .context("failed finishing L1 batch in executor")?;
+            .context("Failed getting storage view cache")?;
+        updates_manager.finish_batch(finished_batch);
+        // this is needed for Basic Witness Input Producer to use in memory reads, but not database queries
+        updates_manager.update_storage_view_cache(storage_view_cache);
+
+        latency.observe();
         output_handler
             .handle_l1_batch(Arc::new(updates_manager))
             .await
@@ -133,6 +140,11 @@ impl VmRunner {
             .await?
             + 1;
         loop {
+            if *stop_receiver.borrow() {
+                tracing::info!("VM runner was interrupted");
+                return Ok(());
+            }
+
             // Traverse all handles and filter out tasks that have been finished. Also propagates
             // any panic/error that might have happened during the task's execution.
             let mut retained_handles = Vec::new();
@@ -147,11 +159,15 @@ impl VmRunner {
                 }
             }
             task_handles = retained_handles;
+            METRICS
+                .in_progress_l1_batches
+                .set(task_handles.len() as u64);
 
             let last_ready_batch = self
                 .io
                 .last_ready_to_be_loaded_batch(&mut self.pool.connection().await?)
                 .await?;
+            METRICS.last_ready_batch.set(last_ready_batch.0.into());
             if next_batch > last_ready_batch {
                 // Next batch is not ready to be processed yet
                 tokio::time::sleep(SLEEP_INTERVAL).await;
@@ -182,6 +198,9 @@ impl VmRunner {
                 .create_handler(next_batch)
                 .await?;
 
+            self.io
+                .mark_l1_batch_as_processing(&mut self.pool.connection().await?, next_batch)
+                .await?;
             let handle = tokio::task::spawn(Self::process_batch(
                 batch_executor,
                 batch_data.l2_blocks,

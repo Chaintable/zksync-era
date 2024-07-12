@@ -26,7 +26,10 @@ fn create(
     ecosystem_config: &mut EcosystemConfig,
     shell: &Shell,
 ) -> anyhow::Result<()> {
-    let args = args.fill_values_with_prompt(ecosystem_config.list_of_chains().len() as u32);
+    let args = args.fill_values_with_prompt(
+        ecosystem_config.list_of_chains().len() as u32,
+        &ecosystem_config.l1_network,
+    );
 
     logger::note(MSG_SELECTED_CONFIG, logger::object_to_string(&args));
     logger::info(MSG_CREATING_CHAIN);
@@ -65,6 +68,7 @@ pub(crate) fn create_chain_inner(
         link_to_code: ecosystem_config.link_to_code.clone(),
         rocks_db_path: ecosystem_config.get_chain_rocks_db_path(&default_chain_name),
         configs: chain_configs_path.clone(),
+        external_node_config_path: None,
         l1_batch_commit_data_generator_mode: args.l1_batch_commit_data_generator_mode,
         base_token: args.base_token,
         wallet_creation: args.wallet_creation,

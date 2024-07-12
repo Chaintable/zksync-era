@@ -16,7 +16,7 @@ use zksync_node_test_utils::{create_l1_batch, create_l2_block, prepare_recovery_
 use zksync_types::{AccountTreeId, Address, L2BlockNumber, StorageKey, StorageLog, H256};
 use zksync_web3_decl::jsonrpsee::core::ClientError;
 
-use super::{metrics::StepOutcomeLabel, *};
+use super::{metrics::StepOutcomeLabel, provider::TreeDataProviderResult, *};
 
 #[derive(Debug, Default)]
 pub(super) struct MockMainNodeClient {
@@ -35,7 +35,8 @@ impl TreeDataProvider for MockMainNodeClient {
     async fn batch_details(
         &mut self,
         number: L1BatchNumber,
-    ) -> TreeDataFetcherResult<Result<H256, MissingData>> {
+        _last_l2_block: &L2BlockHeader,
+    ) -> TreeDataProviderResult {
         if self.transient_error.fetch_and(false, Ordering::Relaxed) {
             let err = ClientError::RequestTimeout;
             return Err(EnrichedClientError::new(err, "batch_details").into());
@@ -84,13 +85,23 @@ pub(super) async fn seal_l1_batch_with_timestamp(
     let initial_writes = [StorageKey::new(
         AccountTreeId::new(Address::repeat_byte(1)),
         H256::from_low_u64_be(number.0.into()),
-    )];
+    )
+    .hashed_key()];
     transaction
         .storage_logs_dedup_dal()
         .insert_initial_writes(number, &initial_writes)
         .await
         .unwrap();
     transaction.commit().await.unwrap();
+}
+
+pub(super) async fn get_last_l2_block(
+    storage: &mut Connection<'_, Core>,
+    number: L1BatchNumber,
+) -> L2BlockHeader {
+    TreeDataFetcher::get_last_l2_block(storage, number)
+        .await
+        .unwrap()
 }
 
 #[derive(Debug)]
@@ -105,7 +116,8 @@ impl FetcherHarness {
         let (updates_sender, updates_receiver) = mpsc::unbounded_channel();
         let metrics = &*Box::leak(Box::<TreeDataFetcherMetrics>::default());
         let fetcher = TreeDataFetcher {
-            data_provider: Box::new(client),
+            data_provider: CombinedDataProvider::new(client),
+            diamond_proxy_address: None,
             pool: pool.clone(),
             metrics,
             health_updater: ReactiveHealthCheck::new("tree_data_fetcher").1,
@@ -299,7 +311,8 @@ impl TreeDataProvider for SlowMainNode {
     async fn batch_details(
         &mut self,
         number: L1BatchNumber,
-    ) -> TreeDataFetcherResult<Result<H256, MissingData>> {
+        _last_l2_block: &L2BlockHeader,
+    ) -> TreeDataProviderResult {
         if number != L1BatchNumber(1) {
             return Ok(Err(MissingData::Batch));
         }

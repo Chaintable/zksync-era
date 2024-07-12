@@ -1,10 +1,10 @@
 use anyhow::Context as _;
 use zksync_basic_types::L2ChainId;
 use zksync_config::configs::consensus::{
-    ConsensusConfig, GenesisSpec, Host, NodePublicKey, ProtocolVersion, ValidatorPublicKey,
-    WeightedValidator,
+    AttesterPublicKey, ConsensusConfig, GenesisSpec, Host, NodePublicKey, ProtocolVersion,
+    RpcConfig, ValidatorPublicKey, WeightedAttester, WeightedValidator,
 };
-use zksync_protobuf::{repr::ProtoRepr, required};
+use zksync_protobuf::{read_optional, repr::ProtoRepr, required, ProtoFmt};
 
 use crate::{proto::consensus as proto, read_optional_repr};
 
@@ -13,6 +13,22 @@ impl ProtoRepr for proto::WeightedValidator {
     fn read(&self) -> anyhow::Result<Self::Type> {
         Ok(Self::Type {
             key: ValidatorPublicKey(required(&self.key).context("key")?.clone()),
+            weight: *required(&self.weight).context("weight")?,
+        })
+    }
+    fn build(this: &Self::Type) -> Self {
+        Self {
+            key: Some(this.key.0.clone()),
+            weight: Some(this.weight),
+        }
+    }
+}
+
+impl ProtoRepr for proto::WeightedAttester {
+    type Type = WeightedAttester;
+    fn read(&self) -> anyhow::Result<Self::Type> {
+        Ok(Self::Type {
+            key: AttesterPublicKey(required(&self.key).context("key")?.clone()),
             weight: *required(&self.weight).context("weight")?,
         })
     }
@@ -41,6 +57,13 @@ impl ProtoRepr for proto::GenesisSpec {
                 .map(|(i, x)| x.read().context(i))
                 .collect::<Result<_, _>>()
                 .context("validators")?,
+            attesters: self
+                .attesters
+                .iter()
+                .enumerate()
+                .map(|(i, x)| x.read().context(i))
+                .collect::<Result<_, _>>()
+                .context("attesters")?,
             leader: ValidatorPublicKey(required(&self.leader).context("leader")?.clone()),
         })
     }
@@ -49,7 +72,22 @@ impl ProtoRepr for proto::GenesisSpec {
             chain_id: Some(this.chain_id.as_u64()),
             protocol_version: Some(this.protocol_version.0),
             validators: this.validators.iter().map(ProtoRepr::build).collect(),
+            attesters: this.attesters.iter().map(ProtoRepr::build).collect(),
             leader: Some(this.leader.0.clone()),
+        }
+    }
+}
+
+impl ProtoRepr for proto::RpcConfig {
+    type Type = RpcConfig;
+    fn read(&self) -> anyhow::Result<Self::Type> {
+        Ok(Self::Type {
+            get_block_rate: read_optional(&self.get_block_rate).context("get_block_rate")?,
+        })
+    }
+    fn build(this: &Self::Type) -> Self {
+        Self {
+            get_block_rate: this.get_block_rate.as_ref().map(ProtoFmt::build),
         }
     }
 }
@@ -85,6 +123,7 @@ impl ProtoRepr for proto::Config {
                 .map(|(i, e)| read_addr(e).context(i))
                 .collect::<Result<_, _>>()?,
             genesis_spec: read_optional_repr(&self.genesis_spec).context("genesis_spec")?,
+            rpc: read_optional_repr(&self.rpc_config).context("rpc_config")?,
         })
     }
 
@@ -110,6 +149,7 @@ impl ProtoRepr for proto::Config {
                 })
                 .collect(),
             genesis_spec: this.genesis_spec.as_ref().map(ProtoRepr::build),
+            rpc_config: this.rpc.as_ref().map(ProtoRepr::build),
         }
     }
 }

@@ -24,13 +24,15 @@ zksync_utils.workspace = true
 zksync_eth_client.workspace = true
 zksync_concurrency.workspace = true
 vise.workspace = true
-vm_utils.workspace = true
+zksync_vm_utils.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+futures.workspace = true
 tracing.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["time"] }
 thiserror.workspace = true
 

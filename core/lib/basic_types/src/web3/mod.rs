@@ -327,6 +327,9 @@ pub struct Log {
     pub log_type: Option<String>,
     /// Removed
     pub removed: Option<bool>,
+    /// L2 block timestamp
+    #[serde(rename = "blockTimestamp")]
+    pub block_timestamp: Option<U64>,
 }
 
 impl Log {
@@ -827,6 +830,7 @@ pub enum TransactionCondition {
 }
 
 // `FeeHistory`: from `web3::types::fee_history`
+// Adapted to support blobs.
 
 /// The fee history type returned from `eth_feeHistory` call.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -834,14 +838,25 @@ pub enum TransactionCondition {
 pub struct FeeHistory {
     /// Lowest number block of the returned range.
     pub oldest_block: BlockNumber,
-    /// A vector of block base fees per gas. This includes the next block after the newest of the returned range, because this value can be derived from the newest block. Zeroes are returned for pre-EIP-1559 blocks.
+    /// A vector of block base fees per gas. This includes the next block after the newest of the returned range,
+    /// because this value can be derived from the newest block. Zeroes are returned for pre-EIP-1559 blocks.
     #[serde(default)] // some node implementations skip empty lists
     pub base_fee_per_gas: Vec<U256>,
     /// A vector of block gas used ratios. These are calculated as the ratio of gas used and gas limit.
     #[serde(default)] // some node implementations skip empty lists
     pub gas_used_ratio: Vec<f64>,
-    /// A vector of effective priority fee per gas data points from a single block. All zeroes are returned if the block is empty. Returned only if requested.
+    /// A vector of effective priority fee per gas data points from a single block. All zeroes are returned if
+    /// the block is empty. Returned only if requested.
     pub reward: Option<Vec<Vec<U256>>>,
+    /// An array of base fees per blob gas for blocks. This includes the next block following the newest in the
+    /// returned range, as this value can be derived from the latest block. For blocks before EIP-4844, zeroes
+    /// are returned.
+    #[serde(default)] // some node implementations skip empty lists
+    pub base_fee_per_blob_gas: Vec<U256>,
+    /// An array showing the ratios of blob gas used in blocks. These ratios are calculated by dividing blobGasUsed
+    /// by the maximum blob gas per block.
+    #[serde(default)] // some node implementations skip empty lists
+    pub blob_gas_used_ratio: Vec<f64>,
 }
 
 // `SyncInfo`, `SyncState`: from `web3::types::sync_state`
@@ -867,6 +882,28 @@ pub enum SyncState {
     NotSyncing,
 }
 
+// Sync info from subscription has a different key format
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct SubscriptionSyncInfo {
+    /// The block at which import began.
+    pub starting_block: U256,
+    /// The highest currently synced block.
+    pub current_block: U256,
+    /// The estimated highest block.
+    pub highest_block: U256,
+}
+
+impl From<SubscriptionSyncInfo> for SyncInfo {
+    fn from(s: SubscriptionSyncInfo) -> Self {
+        Self {
+            starting_block: s.starting_block,
+            current_block: s.current_block,
+            highest_block: s.highest_block,
+        }
+    }
+}
+
 // The `eth_syncing` method returns either `false` or an instance of the sync info object.
 // This doesn't play particularly well with the features exposed by `serde_derive`,
 // so we use the custom impls below to ensure proper behavior.
@@ -875,28 +912,6 @@ impl<'de> Deserialize<'de> for SyncState {
     where
         D: Deserializer<'de>,
     {
-        // Sync info from subscription has a different key format
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-        #[serde(rename_all = "PascalCase")]
-        struct SubscriptionSyncInfo {
-            /// The block at which import began.
-            pub starting_block: U256,
-            /// The highest currently synced block.
-            pub current_block: U256,
-            /// The estimated highest block.
-            pub highest_block: U256,
-        }
-
-        impl From<SubscriptionSyncInfo> for SyncInfo {
-            fn from(s: SubscriptionSyncInfo) -> Self {
-                Self {
-                    starting_block: s.starting_block,
-                    current_block: s.current_block,
-                    highest_block: s.highest_block,
-                }
-            }
-        }
-
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
         struct SubscriptionSyncState {
             pub syncing: bool,

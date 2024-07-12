@@ -3,14 +3,13 @@ use std::{sync::Arc, time::Instant};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use circuit_definitions::circuit_definitions::recursion_layer::base_circuit_type_into_recursive_leaf_circuit_type;
-use prover_dal::{Prover, ProverDal};
 use zkevm_test_harness::{
     witness::recursive_aggregation::{compute_leaf_params, create_leaf_witnesses},
     zkevm_circuits::scheduler::aux::BaseLayerCircuitType,
 };
 use zksync_config::configs::FriWitnessGeneratorConfig;
-use zksync_dal::ConnectionPool;
-use zksync_object_store::{ObjectStore, ObjectStoreFactory};
+use zksync_object_store::ObjectStore;
+use zksync_prover_dal::{ConnectionPool, Prover, ProverDal};
 use zksync_prover_fri_types::{
     circuit_definitions::{
         boojum::field::goldilocks::GoldilocksField,
@@ -80,15 +79,15 @@ pub struct LeafAggregationWitnessGenerator {
 }
 
 impl LeafAggregationWitnessGenerator {
-    pub async fn new(
+    pub fn new(
         config: FriWitnessGeneratorConfig,
-        store_factory: &ObjectStoreFactory,
+        object_store: Arc<dyn ObjectStore>,
         prover_connection_pool: ConnectionPool<Prover>,
         protocol_version: ProtocolSemanticVersion,
     ) -> Self {
         Self {
             config,
-            object_store: store_factory.create_store().await,
+            object_store,
             prover_connection_pool,
             protocol_version,
         }
