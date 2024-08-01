@@ -25,7 +25,7 @@ use zksync_system_constants::{
     SYSTEM_CONTEXT_CURRENT_TX_ROLLING_HASH_POSITION, ZKPORTER_IS_AVAILABLE,
 };
 use zksync_types::{
-    api,
+    api::{self, state_override::StateOverride},
     block::{pack_block_info, unpack_block_info, L2BlockHasher},
     fee_model::BatchFeeInput,
     get_nonce_key,
@@ -37,11 +37,13 @@ use zksync_types::{
 use zksync_utils::{h256_to_u256, time::seconds_since_epoch, u256_to_h256};
 
 use super::{
+    storage::StorageWithOverrides,
     vm_metrics::{self, SandboxStage, SANDBOX_METRICS},
     ApiTracer, BlockArgs, TxExecutionArgs, TxSharedArgs, VmPermit,
 };
 
-type BoxedVm<'a> = Box<VmInstance<StorageView<PostgresStorage<'a>>, HistoryDisabled>>;
+type VmStorageView<'a> = StorageView<StorageWithOverrides<PostgresStorage<'a>>>;
+type BoxedVm<'a> = Box<VmInstance<VmStorageView<'a>, HistoryDisabled>>;
 
 #[derive(Debug)]
 struct Sandbox<'a> {
@@ -49,7 +51,7 @@ struct Sandbox<'a> {
     l1_batch_env: L1BatchEnv,
     execution_args: &'a TxExecutionArgs,
     l2_block_info_to_reset: Option<StoredL2BlockInfo>,
-    storage_view: StorageView<PostgresStorage<'a>>,
+    storage_view: VmStorageView<'a>,
 }
 
 impl<'a> Sandbox<'a> {
@@ -58,6 +60,7 @@ impl<'a> Sandbox<'a> {
         shared_args: TxSharedArgs,
         execution_args: &'a TxExecutionArgs,
         block_args: BlockArgs,
+        state_override: &StateOverride,
     ) -> anyhow::Result<Sandbox<'a>> {
         let resolve_started_at = Instant::now();
         let resolved_block_info = block_args
@@ -93,7 +96,8 @@ impl<'a> Sandbox<'a> {
         .context("cannot create `PostgresStorage`")?
         .with_caches(shared_args.caches.clone());
 
-        let storage_view = StorageView::new(storage);
+        let storage_with_overrides = StorageWithOverrides::new(storage, state_override);
+        let storage_view = StorageView::new(storage_with_overrides);
         let (system_env, l1_batch_env) = Self::prepare_env(
             shared_args,
             execution_args,
@@ -169,7 +173,7 @@ impl<'a> Sandbox<'a> {
 
     fn reset_storage_view(
         l2_block_info_to_reset: StoredL2BlockInfo,
-        storage_view_ptr: StoragePtr<StorageView<PostgresStorage<'a>>>,
+        storage_view_ptr: StoragePtr<StorageView<StorageWithOverrides<PostgresStorage<'a>>>>,
     ) {
         let mut storage_view = storage_view_ptr.borrow_mut();
         let l2_block_info_key = StorageKey::new(
@@ -287,7 +291,7 @@ impl<'a> Sandbox<'a> {
         mut self,
         tx: &Transaction,
         adjust_pubdata_price: bool,
-    ) -> (BoxedVm<'a>, StoragePtr<StorageView<PostgresStorage<'a>>>) {
+    ) -> (BoxedVm<'a>, StoragePtr<VmStorageView<'a>>) {
         self.setup_storage_view(tx);
         let protocol_version = self.system_env.version;
         if adjust_pubdata_price {
@@ -322,9 +326,10 @@ pub(super) fn apply_vm_in_sandbox<T>(
     execution_args: &TxExecutionArgs,
     connection_pool: &ConnectionPool<Core>,
     tx: Transaction,
-    block_args: BlockArgs,
+    block_args: BlockArgs, // Block arguments for the transaction.
+    state_override: Option<StateOverride>,
     apply: impl FnOnce(
-        &mut VmInstance<StorageView<PostgresStorage<'_>>, HistoryDisabled>,
+        &mut VmInstance<VmStorageView<'_>, HistoryDisabled>,
         Transaction,
         ProtocolVersionId,
     ) -> T,
@@ -347,6 +352,7 @@ pub(super) fn apply_vm_in_sandbox<T>(
         shared_args,
         execution_args,
         block_args,
+        state_override.as_ref().unwrap_or(&StateOverride::default()),
     ))?;
     let protocol_version = sandbox.system_env.version;
     let (mut vm, storage_view) = sandbox.into_vm(&tx, adjust_pubdata_price);
@@ -359,6 +365,7 @@ pub(super) fn apply_vm_in_sandbox<T>(
         tx.initiator_account(),
         tx.nonce().unwrap_or(Nonce(0))
     );
+
     let execution_latency = SANDBOX_METRICS.sandbox[&SandboxStage::Execution].start();
     let result = apply(&mut vm, tx, protocol_version);
     let vm_execution_took = execution_latency.observe();
@@ -401,6 +408,7 @@ pub(super) fn apply_many_vm_in_sandbox(
         shared_args,
         execution_args,
         block_args,
+        &StateOverride::default(),
     ))?;
 
     let protocol_version = sandbox.system_env.version;
@@ -413,13 +421,14 @@ pub(super) fn apply_many_vm_in_sandbox(
             sandbox.l2_block_info_to_reset.unwrap(),
             storage_view.clone(),
         );
-        let mut vm: Box<VmInstance<StorageView<PostgresStorage>, HistoryDisabled>> =
-            Box::new(VmInstance::new_with_specific_version(
-                l1_batch_env.clone(),
-                system_env.clone(),
-                storage_view.clone(),
-                protocol_version.into_api_vm_version(),
-            ));
+        let mut vm: Box<
+            VmInstance<StorageView<StorageWithOverrides<PostgresStorage>>, HistoryDisabled>,
+        > = Box::new(VmInstance::new_with_specific_version(
+            l1_batch_env.clone(),
+            system_env.clone(),
+            storage_view.clone(),
+            protocol_version.into_api_vm_version(),
+        ));
         let call_tracer_result = Arc::new(OnceCell::default());
         let custom_tracers: Vec<_> =
             vec![ApiTracer::CallTracer(call_tracer_result.clone()).into_boxed()]

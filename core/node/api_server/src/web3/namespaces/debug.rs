@@ -200,6 +200,7 @@ impl DebugNamespace {
                 block_args,
                 self.sender_config().vm_execution_cache_misses_limit,
                 custom_tracers,
+                None,
             )
             .await?;
 
@@ -312,6 +313,7 @@ impl DebugNamespace {
                 block_args,
                 self.sender_config().vm_execution_cache_misses_limit,
                 custom_tracers,
+                None,
             )
             .await?;
 
