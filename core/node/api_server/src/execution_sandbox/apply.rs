@@ -173,7 +173,7 @@ impl<'a> Sandbox<'a> {
 
     fn reset_storage_view(
         l2_block_info_to_reset: StoredL2BlockInfo,
-        storage_view_ptr: StoragePtr<StorageView<PostgresStorage<'a>>>,
+        storage_view_ptr: StoragePtr<StorageView<StorageWithOverrides<PostgresStorage<'a>>>>,
     ) {
         let mut storage_view = storage_view_ptr.borrow_mut();
         let l2_block_info_key = StorageKey::new(
@@ -408,6 +408,7 @@ pub(super) fn apply_many_vm_in_sandbox(
         shared_args,
         execution_args,
         block_args,
+        &StateOverride::default(),
     ))?;
 
     let protocol_version = sandbox.system_env.version;
@@ -420,13 +421,14 @@ pub(super) fn apply_many_vm_in_sandbox(
             sandbox.l2_block_info_to_reset.unwrap(),
             storage_view.clone(),
         );
-        let mut vm: Box<VmInstance<StorageView<PostgresStorage>, HistoryDisabled>> =
-            Box::new(VmInstance::new_with_specific_version(
-                l1_batch_env.clone(),
-                system_env.clone(),
-                storage_view.clone(),
-                protocol_version.into_api_vm_version(),
-            ));
+        let mut vm: Box<
+            VmInstance<StorageView<StorageWithOverrides<PostgresStorage>>, HistoryDisabled>,
+        > = Box::new(VmInstance::new_with_specific_version(
+            l1_batch_env.clone(),
+            system_env.clone(),
+            storage_view.clone(),
+            protocol_version.into_api_vm_version(),
+        ));
         let call_tracer_result = Arc::new(OnceCell::default());
         let custom_tracers: Vec<_> =
             vec![ApiTracer::CallTracer(call_tracer_result.clone()).into_boxed()]
