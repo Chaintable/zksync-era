@@ -12,7 +12,7 @@ use zksync_types::{
         flat_call, BlockId, BlockNumber, DebugCall, Log, PreError, PreResult, ResultDebugCall,
         TracerConfig, TransactionReceipt,
     },
-    debug_flat_call::{flatten_debug_calls, DebugCallFlat},
+    debug_flat_call::{flatten_debug_call, flatten_debug_calls, DebugCallFlat},
     fee_model::BatchFeeInput,
     l2::L2Tx,
     transaction_request::CallRequest,
@@ -130,6 +130,18 @@ impl DebugNamespace {
             }
             result
         }))
+    }
+
+    pub async fn trace_trace_transaction_impl(
+        &self,
+        tx_hash: H256,
+    ) -> Result<Vec<DebugCallFlat>, Web3Error> {
+        let call_trace = self.debug_trace_transaction_impl(tx_hash, None).await?;
+        if call_trace.is_none() {
+            return Ok(vec![]);
+        }
+        let call_trace_flat = flatten_debug_call(call_trace.unwrap());
+        Ok(call_trace_flat)
     }
 
     pub async fn debug_trace_call_impl(

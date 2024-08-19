@@ -9,7 +9,7 @@ use zksync_types::{
 };
 use zksync_web3_decl::{
     jsonrpsee::core::{async_trait, RpcResult},
-    namespaces::DebugNamespaceServer,
+    namespaces::{DebugNamespaceServer, PreNamespaceServer, TraceNamespaceServer},
 };
 
 use crate::web3::namespaces::DebugNamespace;
@@ -83,6 +83,28 @@ impl DebugNamespaceServer for DebugNamespace {
         block: Option<BlockId>,
     ) -> RpcResult<Vec<PreResult>> {
         self.debug_pre_trace_many_impl(requests, block)
+            .await
+            .map_err(|err| self.current_method().map_err(err))
+    }
+}
+
+#[async_trait]
+impl PreNamespaceServer for DebugNamespace {
+    async fn pre_trace_many(
+        &self,
+        requests: Vec<CallRequest>,
+        block: Option<BlockId>,
+    ) -> RpcResult<Vec<PreResult>> {
+        self.debug_pre_trace_many_impl(requests, block)
+            .await
+            .map_err(|err| self.current_method().map_err(err))
+    }
+}
+
+#[async_trait]
+impl TraceNamespaceServer for DebugNamespace {
+    async fn trace_trace_transaction(&self, tx_hash: H256) -> RpcResult<Vec<DebugCallFlat>> {
+        self.trace_trace_transaction_impl(tx_hash)
             .await
             .map_err(|err| self.current_method().map_err(err))
     }

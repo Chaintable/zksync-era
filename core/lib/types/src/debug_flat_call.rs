@@ -35,10 +35,39 @@ pub struct CallResult {
     pub gas_used: U256,
 }
 
+pub fn set_zero(call: &mut DebugCall) {
+    for sub_call in call.calls.iter_mut() {
+        set_zero(sub_call);
+        if call.r#type == DebugCallType::Call
+            && call.from == sub_call.from
+            && call.to == sub_call.to
+            && call.value == sub_call.value
+        {
+            sub_call.value = U256::zero();
+        }
+        if call.r#type == DebugCallType::Call
+            && call.from == sub_call.from
+            && call.value == sub_call.value
+            && sub_call.r#type == DebugCallType::Create
+        {
+            sub_call.value = U256::zero();
+        }
+    }
+}
+
+pub fn flatten_debug_call(mut call: DebugCall) -> Vec<DebugCallFlat> {
+    let mut flattened_calls = Vec::new();
+    let mut trace_address = vec![0];
+    set_zero(&mut call);
+    flatten_call_recursive(&call, &mut flattened_calls, &mut trace_address);
+    flattened_calls
+}
+
 pub fn flatten_debug_calls(calls: Vec<ResultDebugCall>) -> Vec<DebugCallFlat> {
     let mut flattened_calls = Vec::new();
-    for (index, result_debug_call) in calls.into_iter().enumerate() {
+    for (index, mut result_debug_call) in calls.into_iter().enumerate() {
         let mut trace_address = vec![index]; // Initialize the trace addressees with the index of the top-level call
+        set_zero(&mut result_debug_call.result);
         flatten_call_recursive(
             &result_debug_call.result,
             &mut flattened_calls,
