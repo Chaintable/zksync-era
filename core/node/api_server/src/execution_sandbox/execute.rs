@@ -5,13 +5,15 @@ use itertools::Itertools;
 use tracing::{span, Level};
 use zksync_dal::{ConnectionPool, Core};
 use zksync_multivm::{
-    interface::{TxExecutionMode, VmExecutionResultAndLogs, VmInterface},
+    interface::{
+        TransactionExecutionMetrics, TxExecutionMode, VmExecutionResultAndLogs, VmInterface,
+    },
     tracers::StorageInvocations,
     MultiVMTracer,
 };
 use zksync_types::{
-    fee::TransactionExecutionMetrics, l2::L2Tx, transaction_request::CallOverrides, vm_trace::Call,
-    ExecuteTransactionCommon, Nonce, PackedEthSignature, Transaction, U256,
+    l2::L2Tx, transaction_request::CallOverrides, vm_trace::Call, ExecuteTransactionCommon, Nonce,
+    PackedEthSignature, Transaction, U256,
 };
 
 use super::{
