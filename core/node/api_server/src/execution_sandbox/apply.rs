@@ -14,12 +14,15 @@ use anyhow::Context as _;
 use tokio::runtime::Handle;
 use zksync_dal::{Connection, ConnectionPool, Core, CoreDal, DalError};
 use zksync_multivm::{
-    interface::{L1BatchEnv, L2BlockEnv, SystemEnv, VmExecutionResultAndLogs, VmInterface},
+    interface::{
+        storage::{ReadStorage, StoragePtr, StorageView, WriteStorage},
+        L1BatchEnv, L2BlockEnv, SystemEnv, VmExecutionResultAndLogs, VmInterface,
+    },
     utils::adjust_pubdata_price_for_tx,
     vm_latest::{constants::BATCH_COMPUTATIONAL_GAS_LIMIT, HistoryDisabled},
     VmInstance,
 };
-use zksync_state::{PostgresStorage, ReadStorage, StoragePtr, StorageView, WriteStorage};
+use zksync_state::PostgresStorage;
 use zksync_system_constants::{
     SYSTEM_CONTEXT_ADDRESS, SYSTEM_CONTEXT_CURRENT_L2_BLOCK_INFO_POSITION,
     SYSTEM_CONTEXT_CURRENT_TX_ROLLING_HASH_POSITION, ZKPORTER_IS_AVAILABLE,
@@ -43,7 +46,7 @@ use super::{
 };
 
 type VmStorageView<'a> = StorageView<StorageWithOverrides<PostgresStorage<'a>>>;
-type BoxedVm<'a> = Box<VmInstance<VmStorageView<'a>, HistoryDisabled>>;
+type BoxedVm<'a> = Box<VmInstance<StorageWithOverrides<PostgresStorage<'a>>, HistoryDisabled>>;
 
 #[derive(Debug)]
 struct Sandbox<'a> {
@@ -329,7 +332,7 @@ pub(super) fn apply_vm_in_sandbox<T>(
     block_args: BlockArgs, // Block arguments for the transaction.
     state_override: Option<StateOverride>,
     apply: impl FnOnce(
-        &mut VmInstance<VmStorageView<'_>, HistoryDisabled>,
+        &mut VmInstance<StorageWithOverrides<PostgresStorage<'_>>, HistoryDisabled>,
         Transaction,
         ProtocolVersionId,
     ) -> T,
@@ -421,14 +424,13 @@ pub(super) fn apply_many_vm_in_sandbox(
             sandbox.l2_block_info_to_reset.unwrap(),
             storage_view.clone(),
         );
-        let mut vm: Box<
-            VmInstance<StorageView<StorageWithOverrides<PostgresStorage>>, HistoryDisabled>,
-        > = Box::new(VmInstance::new_with_specific_version(
-            l1_batch_env.clone(),
-            system_env.clone(),
-            storage_view.clone(),
-            protocol_version.into_api_vm_version(),
-        ));
+        let mut vm: Box<VmInstance<StorageWithOverrides<PostgresStorage>, HistoryDisabled>> =
+            Box::new(VmInstance::new_with_specific_version(
+                l1_batch_env.clone(),
+                system_env.clone(),
+                storage_view.clone(),
+                protocol_version.into_api_vm_version(),
+            ));
         let call_tracer_result = Arc::new(OnceCell::default());
         let custom_tracers: Vec<_> =
             vec![ApiTracer::CallTracer(call_tracer_result.clone()).into_boxed()]

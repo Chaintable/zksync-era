@@ -6,18 +6,22 @@ use std::{
 use common::logger;
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
-use types::{ChainId, L1Network, ProverMode, WalletCreation};
+use types::{L1Network, ProverMode, WalletCreation};
 use xshell::Shell;
+use zksync_basic_types::L2ChainId;
 
 use crate::{
     consts::{
         CONFIGS_PATH, CONFIG_NAME, CONTRACTS_FILE, ECOSYSTEM_PATH, ERA_CHAIN_ID,
-        ERC20_DEPLOYMENT_FILE, INITIAL_DEPLOYMENT_FILE, L1_CONTRACTS_FOUNDRY, LOCAL_DB_PATH,
-        WALLETS_FILE,
+        ERC20_CONFIGS_FILE, ERC20_DEPLOYMENT_FILE, INITIAL_DEPLOYMENT_FILE, L1_CONTRACTS_FOUNDRY,
+        LOCAL_DB_PATH, WALLETS_FILE,
     },
     create_localhost_wallets,
-    forge_interface::deploy_ecosystem::input::{Erc20DeploymentConfig, InitialDeploymentConfig},
-    traits::{FileConfigWithDefaultName, ReadConfig, SaveConfig},
+    forge_interface::deploy_ecosystem::{
+        input::{Erc20DeploymentConfig, InitialDeploymentConfig},
+        output::{ERC20Tokens, Erc20Token},
+    },
+    traits::{FileConfigWithDefaultName, ReadConfig, SaveConfig, ZkToolboxConfig},
     ChainConfig, ChainConfigInternal, ContractsConfig, WalletsConfig,
 };
 
@@ -32,7 +36,7 @@ struct EcosystemConfigInternal {
     pub chains: PathBuf,
     pub config: PathBuf,
     pub default_chain: String,
-    pub era_chain_id: ChainId,
+    pub era_chain_id: L2ChainId,
     pub prover_version: ProverMode,
     pub wallet_creation: WalletCreation,
 }
@@ -48,7 +52,7 @@ pub struct EcosystemConfig {
     pub chains: PathBuf,
     pub config: PathBuf,
     pub default_chain: String,
-    pub era_chain_id: ChainId,
+    pub era_chain_id: L2ChainId,
     pub prover_version: ProverMode,
     pub wallet_creation: WalletCreation,
     pub shell: OnceCell<Shell>,
@@ -89,6 +93,10 @@ impl ReadConfig for EcosystemConfig {
 impl FileConfigWithDefaultName for EcosystemConfig {
     const FILE_NAME: &'static str = CONFIG_NAME;
 }
+
+impl ZkToolboxConfig for EcosystemConfigInternal {}
+
+impl ZkToolboxConfig for EcosystemConfig {}
 
 impl EcosystemConfig {
     fn get_shell(&self) -> &Shell {
@@ -163,6 +171,11 @@ impl EcosystemConfig {
 
     pub fn get_erc20_deployment_config(&self) -> anyhow::Result<Erc20DeploymentConfig> {
         Erc20DeploymentConfig::read(self.get_shell(), self.config.join(ERC20_DEPLOYMENT_FILE))
+    }
+    pub fn get_erc20_tokens(&self) -> Vec<Erc20Token> {
+        ERC20Tokens::read(self.get_shell(), self.config.join(ERC20_CONFIGS_FILE))
+            .map(|tokens| tokens.tokens.values().cloned().collect())
+            .unwrap_or_default()
     }
 
     pub fn get_wallets(&self) -> anyhow::Result<WalletsConfig> {
@@ -245,8 +258,8 @@ pub enum EcosystemConfigFromFileError {
     InvalidConfig { source: anyhow::Error },
 }
 
-pub fn get_default_era_chain_id() -> ChainId {
-    ERA_CHAIN_ID
+pub fn get_default_era_chain_id() -> L2ChainId {
+    L2ChainId::from(ERA_CHAIN_ID)
 }
 
 // Find file in all parents repository and return necessary path or an empty error if nothing has been found

@@ -1,6 +1,7 @@
-use std::{ops::Add, time::Duration};
+use std::{ops::Add, sync::Arc, time::Duration};
 
 use ethers::{
+    contract::abigen,
     core::k256::ecdsa::SigningKey,
     middleware::MiddlewareBuilder,
     prelude::{Http, LocalWallet, Provider, Signer, SignerMiddleware},
@@ -8,12 +9,12 @@ use ethers::{
     types::{Address, TransactionRequest, H256},
 };
 
-use crate::wallets::Wallet;
+use crate::{logger, wallets::Wallet};
 
 pub fn create_ethers_client(
     private_key: H256,
     l1_rpc: String,
-    chain_id: Option<u32>,
+    chain_id: Option<u64>,
 ) -> anyhow::Result<SignerMiddleware<Provider<Http>, ethers::prelude::Wallet<SigningKey>>> {
     let mut wallet = LocalWallet::from_bytes(private_key.as_bytes())?;
     if let Some(chain_id) = chain_id {
@@ -27,7 +28,7 @@ pub async fn distribute_eth(
     main_wallet: Wallet,
     addresses: Vec<Address>,
     l1_rpc: String,
-    chain_id: u32,
+    chain_id: u64,
     amount: u128,
 ) -> anyhow::Result<()> {
     let client = create_ethers_client(main_wallet.private_key.unwrap(), l1_rpc, Some(chain_id))?;
@@ -51,5 +52,53 @@ pub async fn distribute_eth(
     }
 
     futures::future::join_all(pending_txs).await;
+    Ok(())
+}
+
+abigen!(
+    TokenContract,
+    r"[
+    function mint(address to, uint256 amount)
+    ]"
+);
+
+pub async fn mint_token(
+    main_wallet: Wallet,
+    token_address: Address,
+    addresses: Vec<Address>,
+    l1_rpc: String,
+    chain_id: u64,
+    amount: u128,
+) -> anyhow::Result<()> {
+    let client = Arc::new(create_ethers_client(
+        main_wallet.private_key.unwrap(),
+        l1_rpc,
+        Some(chain_id),
+    )?);
+
+    let contract = TokenContract::new(token_address, client);
+    // contract
+    for address in addresses {
+        if let Err(err) = mint(&contract, address, amount).await {
+            logger::warn(format!("Failed to mint {err}"))
+        }
+    }
+
+    Ok(())
+}
+
+async fn mint<T: Middleware + 'static>(
+    contract: &TokenContract<T>,
+    address: Address,
+    amount: u128,
+) -> anyhow::Result<()> {
+    contract
+        .mint(address, amount.into())
+        .send()
+        .await?
+        // It's safe to set such low number of confirmations and low interval for localhost
+        .confirmations(1)
+        .interval(Duration::from_millis(30))
+        .await?;
     Ok(())
 }
