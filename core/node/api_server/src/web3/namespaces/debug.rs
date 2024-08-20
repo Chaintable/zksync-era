@@ -12,7 +12,7 @@ use zksync_types::{
         flat_call, BlockId, BlockNumber, DebugCall, Log, OpenEthActionTrace, PreError, PreResult,
         ResultDebugCall, TracerConfig, TransactionReceipt,
     },
-    debug_flat_call::{flatten_debug_call, flatten_debug_calls, DebugCallFlat},
+    debug_flat_call::{flatten_debug_calls, DebugCallFlat},
     fee_model::BatchFeeInput,
     l2::L2Tx,
     transaction_request::CallRequest,
