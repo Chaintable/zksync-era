@@ -1,7 +1,7 @@
 use zksync_types::{
     api::{
-        BlockId, BlockNumber, DebugCall, PreResult, ResultDebugCall, TracerConfig,
-        TransactionReceipt,
+        BlockId, BlockNumber, DebugCall, OpenEthActionTrace, PreResult, ResultDebugCall,
+        TracerConfig, TransactionReceipt,
     },
     debug_flat_call::DebugCallFlat,
     transaction_request::CallRequest,
@@ -103,7 +103,7 @@ impl PreNamespaceServer for DebugNamespace {
 
 #[async_trait]
 impl TraceNamespaceServer for DebugNamespace {
-    async fn trace_trace_transaction(&self, tx_hash: H256) -> RpcResult<Vec<DebugCallFlat>> {
+    async fn trace_trace_transaction(&self, tx_hash: H256) -> RpcResult<Vec<OpenEthActionTrace>> {
         self.trace_trace_transaction_impl(tx_hash)
             .await
             .map_err(|err| self.current_method().map_err(err))

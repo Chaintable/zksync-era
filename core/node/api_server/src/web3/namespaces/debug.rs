@@ -9,8 +9,8 @@ use zksync_multivm::{
 use zksync_system_constants::MAX_ENCODED_TX_SIZE;
 use zksync_types::{
     api::{
-        flat_call, BlockId, BlockNumber, DebugCall, Log, PreError, PreResult, ResultDebugCall,
-        TracerConfig, TransactionReceipt,
+        flat_call, BlockId, BlockNumber, DebugCall, Log, OpenEthActionTrace, PreError, PreResult,
+        ResultDebugCall, TracerConfig, TransactionReceipt,
     },
     debug_flat_call::{flatten_debug_call, flatten_debug_calls, DebugCallFlat},
     fee_model::BatchFeeInput,
@@ -135,12 +135,35 @@ impl DebugNamespace {
     pub async fn trace_trace_transaction_impl(
         &self,
         tx_hash: H256,
-    ) -> Result<Vec<DebugCallFlat>, Web3Error> {
-        let call_trace = self.debug_trace_transaction_impl(tx_hash, None).await?;
+    ) -> Result<Vec<OpenEthActionTrace>, Web3Error> {
+        let mut connection = self.state.acquire_connection().await?;
+        let call_trace = connection
+            .transactions_dal()
+            .get_call_trace(tx_hash)
+            .await
+            .map_err(DalError::generalize)?;
+        let chain_id = self.state.api_config.l2_chain_id;
+        let tx = connection
+            .transactions_web3_dal()
+            .get_transaction_by_hash(tx_hash, chain_id)
+            .await
+            .map_err(DalError::generalize)?;
+        if tx.is_none() {
+            return Ok(vec![]);
+        }
         if call_trace.is_none() {
             return Ok(vec![]);
         }
-        let call_trace_flat = flatten_debug_call(call_trace.unwrap());
+        let call_trace = call_trace.unwrap().into();
+        let tx = tx.unwrap();
+        let call_trace_flat = flat_call(
+            call_trace,
+            tx.transaction_index.unwrap().as_usize(),
+            tx_hash,
+            tx.block_number.unwrap().as_u64(),
+            tx.block_hash.unwrap(),
+            &mut Vec::new(),
+        );
         Ok(call_trace_flat)
     }
 

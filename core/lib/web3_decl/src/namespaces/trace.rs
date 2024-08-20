@@ -1,7 +1,7 @@
 #[cfg_attr(not(feature = "server"), allow(unused_imports))]
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
-use zksync_types::debug_flat_call::DebugCallFlat;
+use zksync_types::api::OpenEthActionTrace;
 
 use crate::{
     client::{ForWeb3Network, L2},
@@ -18,5 +18,5 @@ use crate::{
 )]
 pub trait TraceNamespace {
     #[method(name = "trace_transaction")]
-    async fn trace_trace_transaction(&self, tx_hash: H256) -> RpcResult<Vec<DebugCallFlat>>;
+    async fn trace_trace_transaction(&self, tx_hash: H256) -> RpcResult<Vec<OpenEthActionTrace>>;
 }
