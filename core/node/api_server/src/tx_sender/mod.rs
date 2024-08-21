@@ -1012,6 +1012,35 @@ impl TxSender {
             .into_api_call_result()
     }
 
+    pub(super) async fn eth_call_raw(
+        &self,
+        block_args: BlockArgs,
+        call_overrides: CallOverrides,
+        tx: L2Tx,
+        state_override: Option<StateOverride>,
+    ) -> Result<VmExecutionResultAndLogs, SubmitTxError> {
+        let vm_permit = self.0.vm_concurrency_limiter.acquire().await;
+        let vm_permit = vm_permit.ok_or(SubmitTxError::ServerShuttingDown)?;
+
+        let vm_execution_cache_misses_limit = self.0.sender_config.vm_execution_cache_misses_limit;
+        let result = self
+            .0
+            .executor
+            .execute_tx_eth_call(
+                vm_permit,
+                self.shared_args().await?,
+                self.0.replica_connection_pool.clone(),
+                call_overrides,
+                tx,
+                block_args,
+                vm_execution_cache_misses_limit,
+                vec![],
+                state_override,
+            )
+            .await?;
+        Ok(result)
+    }
+
     pub async fn gas_price(&self) -> anyhow::Result<u64> {
         let mut connection = self.acquire_replica_connection().await?;
         let protocol_version = connection

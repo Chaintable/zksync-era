@@ -3,7 +3,7 @@ use zksync_types::{
         state_override::StateOverride, Block, BlockId, BlockIdVariant, BlockNumber, FeeHistory,
         Log, Transaction, TransactionId, TransactionReceipt, TransactionVariant,
     },
-    transaction_request::CallRequest,
+    transaction_request::{CallRequest, MultiCallResp},
     web3::{Bytes, Index, SyncState},
     Address, H256, U256, U64,
 };
@@ -36,6 +36,25 @@ impl EthNamespaceServer for EthNamespace {
         self.call_impl(req, block.map(Into::into), state_override)
             .await
             .map_err(|err| self.current_method().map_err(err))
+    }
+
+    async fn multi_call(
+        &self,
+        reqs: Vec<CallRequest>,
+        block: Option<BlockIdVariant>,
+        fast_fail: bool,
+        use_parallel: bool,
+        disable_cache: bool,
+    ) -> RpcResult<MultiCallResp> {
+        self.multi_call_impl(
+            reqs,
+            block.map(Into::into),
+            fast_fail,
+            use_parallel,
+            disable_cache,
+        )
+        .await
+        .map_err(|err| self.current_method().map_err(err))
     }
 
     async fn estimate_gas(
