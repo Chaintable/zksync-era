@@ -148,7 +148,7 @@ impl EthNamespace {
 
     async fn call_once_inner(
         &self,
-        request: CallRequest,
+        mut request: CallRequest,
         block_args: BlockArgs,
     ) -> Result<CallResult, Web3Error> {
         let start = Instant::now();
@@ -222,6 +222,21 @@ impl EthNamespace {
                 };
                 return Ok(resp);
             }
+        }
+        self.current_method().set_block_diff(
+            self.state
+                .last_sealed_l2_block
+                .diff_with_block_args(&block_args),
+        );
+        if request.gas.is_none() {
+            request.gas = Some(
+                self.state
+                    .tx_sender
+                    .get_default_eth_call_gas(block_args)
+                    .await
+                    .map_err(Web3Error::InternalError)?
+                    .into(),
+            )
         }
         let call_overrides = request.get_call_overrides()?;
         let tx = L2Tx::from_request(request.into(), self.state.api_config.max_tx_size)?;

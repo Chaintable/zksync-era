@@ -17,6 +17,6 @@ use crate::{
     rpc(client, namespace = "trace", client_bounds(Self: ForWeb3Network<Net = L2>))
 )]
 pub trait TraceNamespace {
-    #[method(name = "trace_transaction")]
+    #[method(name = "transaction")]
     async fn trace_trace_transaction(&self, tx_hash: H256) -> RpcResult<Vec<OpenEthActionTrace>>;
 }
