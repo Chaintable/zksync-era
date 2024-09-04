@@ -11,6 +11,8 @@ use zksync_types::Transaction;
 
 use super::{execute::TransactionExecutor, OneshotExecutor, TxExecutionArgs};
 
+use zksync_vm_interface::Call;
+
 type TxResponseFn = dyn Fn(&Transaction, &OneshotEnv) -> VmExecutionResultAndLogs + Send + Sync;
 
 pub struct MockOneshotExecutor {
@@ -122,6 +124,15 @@ where
         VmExecutionResultAndLogs,
     )> {
         Ok((Ok(()), self.mock_inspect(env, args)))
+    }
+
+    async fn inspect_transactions_with_bytecode_compression(
+        &self,
+        _storage: S,
+        _env: OneshotEnv,
+        _args: Vec<TxExecutionArgs>,
+    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
+        unimplemented!()
     }
 }
 

@@ -11,6 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+zksync_vm_interface.workspace = true
 zksync_config.workspace = true
 zksync_consensus_roles.workspace = true
 zksync_contracts.workspace = true
@@ -53,6 +54,8 @@ tower.workspace = true
 strum = { workspace = true, features = ["derive"] }
 tower-http = { workspace = true, features = ["cors", "metrics"] }
 lru.workspace = true
+ethabi.workspace = true
+rustc-hex.workspace = true
 
 [dev-dependencies]
 zksync_node_genesis.workspace = true

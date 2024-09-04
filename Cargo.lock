@@ -8992,6 +8992,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "ethabi",
  "futures 0.3.28",
  "governor",
  "hex",
@@ -9001,6 +9002,7 @@ dependencies = [
  "once_cell",
  "pin-project-lite",
  "rand 0.8.5",
+ "rustc-hex",
  "serde",
  "serde_json",
  "strum",
@@ -9031,6 +9033,7 @@ dependencies = [
  "zksync_system_constants",
  "zksync_types",
  "zksync_utils",
+ "zksync_vm_interface",
  "zksync_web3_decl",
 ]
 

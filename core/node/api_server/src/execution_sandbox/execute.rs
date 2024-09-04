@@ -10,6 +10,7 @@ use zksync_types::{
     api::state_override::StateOverride, l2::L2Tx, ExecuteTransactionCommon, Nonce,
     PackedEthSignature, Transaction, U256,
 };
+use zksync_vm_interface::Call;
 
 use super::{
     apply::{self, MainOneshotExecutor},
@@ -135,6 +136,27 @@ impl TransactionExecutor {
             are_published_bytecodes_ok: published_bytecodes.is_ok(),
         })
     }
+
+    pub async fn execute_txs_in_sandbox(
+        &self,
+        vm_permit: VmPermit,
+        setup_args: TxSetupArgs,
+        execution_args: Vec<TxExecutionArgs>,
+        connection: Connection<'static, Core>,
+        block_args: BlockArgs,
+        state_override: Option<StateOverride>,
+    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
+        let (env, storage) =
+            apply::prepare_env_and_storage(connection, setup_args, &block_args).await?;
+        let state_override = state_override.unwrap_or_default();
+        let storage = StorageWithOverrides::new(storage, &state_override);
+
+        let res = self
+            .inspect_transactions_with_bytecode_compression(storage, env, execution_args)
+            .await;
+        drop(vm_permit);
+        res
+    }
 }
 
 #[async_trait]
@@ -180,6 +202,26 @@ where
             Self::Mock(executor) => {
                 executor
                     .inspect_transaction_with_bytecode_compression(storage, env, args, ())
+                    .await
+            }
+        }
+    }
+
+    async fn inspect_transactions_with_bytecode_compression(
+        &self,
+        storage: S,
+        env: OneshotEnv,
+        args: Vec<TxExecutionArgs>,
+    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
+        match self {
+            Self::Real(executor) => {
+                executor
+                    .inspect_transactions_with_bytecode_compression(storage, env, args)
+                    .await
+            }
+            Self::Mock(executor) => {
+                executor
+                    .inspect_transactions_with_bytecode_compression(storage, env, args)
                     .await
             }
         }

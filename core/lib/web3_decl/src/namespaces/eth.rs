@@ -6,7 +6,7 @@ use zksync_types::{
         state_override::StateOverride, BlockId, BlockIdVariant, BlockNumber, FeeHistory,
         Transaction, TransactionVariant,
     },
-    transaction_request::CallRequest,
+    transaction_request::{CallRequest, MultiCallResp},
     Address, H256,
 };
 
@@ -39,6 +39,16 @@ pub trait EthNamespace {
         block: Option<BlockIdVariant>,
         state_override: Option<StateOverride>,
     ) -> RpcResult<Bytes>;
+
+    #[method(name = "multiCall")]
+    async fn multi_call(
+        &self,
+        requests: Vec<CallRequest>,
+        block: Option<BlockIdVariant>,
+        fast_fail: bool,
+        use_parallel: bool,
+        disable_cache: bool,
+    ) -> RpcResult<MultiCallResp>;
 
     #[method(name = "estimateGas")]
     async fn estimate_gas(

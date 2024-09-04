@@ -15,6 +15,7 @@ use zksync_state::PostgresStorageCaches;
 use zksync_types::{
     api, fee_model::BatchFeeInput, AccountTreeId, Address, L1BatchNumber, L2BlockNumber, L2ChainId,
 };
+use zksync_vm_interface::Call;
 
 use self::vm_metrics::SandboxStage;
 pub(super) use self::{
@@ -344,7 +345,7 @@ pub(crate) enum BlockArgsError {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BlockArgs {
     block_id: api::BlockId,
-    resolved_block_number: L2BlockNumber,
+    pub resolved_block_number: L2BlockNumber,
     l1_batch_timestamp_s: Option<u64>,
 }
 
@@ -441,4 +442,11 @@ trait OneshotExecutor<S: ReadStorage> {
         Result<(), BytecodeCompressionError>,
         VmExecutionResultAndLogs,
     )>;
+
+    async fn inspect_transactions_with_bytecode_compression(
+        &self,
+        storage: S,
+        env: OneshotEnv,
+        args: Vec<TxExecutionArgs>,
+    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>>;
 }

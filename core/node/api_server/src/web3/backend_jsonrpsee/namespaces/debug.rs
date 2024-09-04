@@ -1,12 +1,15 @@
 use zksync_types::{
-    api::{BlockId, BlockNumber, DebugCall, ResultDebugCall, TracerConfig},
+    api::{
+        BlockId, BlockNumber, DebugCall, OpenEthActionTrace, PreResult, ResultDebugCall,
+        TracerConfig, TransactionReceipt,
+    },
     debug_flat_call::DebugCallFlat,
     transaction_request::CallRequest,
     H256,
 };
 use zksync_web3_decl::{
     jsonrpsee::core::{async_trait, RpcResult},
-    namespaces::DebugNamespaceServer,
+    namespaces::{DebugNamespaceServer, PreNamespaceServer, TraceNamespaceServer},
 };
 
 use crate::web3::namespaces::DebugNamespace;
@@ -60,6 +63,48 @@ impl DebugNamespaceServer for DebugNamespace {
         options: Option<TracerConfig>,
     ) -> RpcResult<Option<DebugCall>> {
         self.debug_trace_transaction_impl(tx_hash, options)
+            .await
+            .map_err(|err| self.current_method().map_err(err))
+    }
+
+    async fn trace_get_log(
+        &self,
+        request: CallRequest,
+        block: Option<BlockId>,
+    ) -> RpcResult<TransactionReceipt> {
+        self.debug_trace_get_log_impl(request, block)
+            .await
+            .map_err(|err| self.current_method().map_err(err))
+    }
+
+    async fn debug_trace_many(
+        &self,
+        requests: Vec<CallRequest>,
+        block: Option<BlockId>,
+    ) -> RpcResult<Vec<PreResult>> {
+        self.debug_pre_trace_many_impl(requests, block)
+            .await
+            .map_err(|err| self.current_method().map_err(err))
+    }
+}
+
+#[async_trait]
+impl PreNamespaceServer for DebugNamespace {
+    async fn pre_trace_many(
+        &self,
+        requests: Vec<CallRequest>,
+        block: Option<BlockId>,
+    ) -> RpcResult<Vec<PreResult>> {
+        self.debug_pre_trace_many_impl(requests, block)
+            .await
+            .map_err(|err| self.current_method().map_err(err))
+    }
+}
+
+#[async_trait]
+impl TraceNamespaceServer for DebugNamespace {
+    async fn trace_trace_transaction(&self, tx_hash: H256) -> RpcResult<Vec<OpenEthActionTrace>> {
+        self.trace_trace_transaction_impl(tx_hash)
             .await
             .map_err(|err| self.current_method().map_err(err))
     }
