@@ -264,13 +264,13 @@ impl<S: ReadStorage> VmSandbox<S> {
                 protocol_version.into(),
             );
         };
+        drop(storage_mut);
         let vm = Box::new(VmInstance::new_with_specific_version(
             env.l1_batch,
             env.system,
             storage_view.clone(),
             protocol_version.into_api_vm_version(),
         ));
-        drop(storage_mut);
 
         Self {
             vm,
