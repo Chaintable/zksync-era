@@ -11023,6 +11023,7 @@ dependencies = [
  "axum 0.7.6",
  "chrono",
  "const-decoder",
+ "ethabi",
  "futures 0.3.30",
  "governor",
  "hex",
@@ -11032,6 +11033,7 @@ dependencies = [
  "once_cell",
  "pin-project-lite",
  "rand 0.8.5",
+ "rustc-hex",
  "serde",
  "serde_json",
  "strum",
@@ -11064,6 +11066,7 @@ dependencies = [
  "zksync_types",
  "zksync_utils",
  "zksync_vm_executor",
+ "zksync_vm_interface",
  "zksync_web3_decl",
 ]
 
@@ -11830,6 +11833,7 @@ dependencies = [
  "zksync_multivm",
  "zksync_types",
  "zksync_utils",
+ "zksync_vm_interface",
 ]
 
 [[package]]

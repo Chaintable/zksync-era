@@ -20,7 +20,7 @@ use zksync_multivm::{
         storage::{ReadStorage, StoragePtr, StorageView, WriteStorage},
         tracer::{ValidationError, ValidationParams},
         ExecutionResult, OneshotEnv, OneshotTracingParams, OneshotTransactionExecutionResult,
-        StoredL2BlockEnv, TxExecutionArgs, TxExecutionMode, VmExecutionMode, VmInterface,
+        StoredL2BlockEnv, TxExecutionArgs, TxExecutionMode, VmExecutionMode, VmInterface,VmExecutionResultAndLogs
     },
     tracers::{CallTracer, StorageInvocations, ValidationTracer},
     utils::adjust_pubdata_price_for_tx,
@@ -37,7 +37,7 @@ use zksync_types::{
     SYSTEM_CONTEXT_CURRENT_L2_BLOCK_INFO_POSITION, SYSTEM_CONTEXT_CURRENT_TX_ROLLING_HASH_POSITION,
 };
 use zksync_utils::{h256_to_u256, u256_to_h256};
-
+use zksync_vm_interface::Call;
 pub use self::{
     block::{BlockInfo, ResolvedBlockInfo},
     contracts::{
@@ -131,6 +131,53 @@ where
         })
         .await
         .context("VM execution panicked")
+    }
+
+    async fn inspect_transactions_with_bytecode_compression(
+        &self,
+        storage: S,
+        env: OneshotEnv,
+        args: Vec<TxExecutionArgs>,
+    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
+        // let missed_storage_invocation_limit = match env.system.execution_mode {
+        //     // storage accesses are not limited for tx validation
+        //     TxExecutionMode::VerifyExecute => usize::MAX,
+        //     TxExecutionMode::EthCall | TxExecutionMode::EstimateFee => {
+        //         self.missed_storage_invocation_limit
+        //     }
+        // };
+
+        tokio::task::spawn_blocking(move || {
+            let mut results = Vec::new();
+            let storage_view = StorageView::new(storage).to_rc_ptr();
+            for args in args {
+                let call_tracer_result = Arc::new(OnceCell::default());
+                let tracers: Vec<_> =
+                    vec![CallTracer::new(call_tracer_result.clone()).into_tracer_pointer()]
+                        .into_iter()
+                        .collect();
+                // let tracers =
+                //     VmSandbox::wrap_tracers(custom_tracers, &env, missed_storage_invocation_limit);
+                let executor =
+                    VmSandbox::new_with_storage_view(storage_view.clone(), env.clone(), args);
+                let result = executor.apply(|vm, transaction| {
+                    let (_, res) = vm.inspect_transaction_with_bytecode_compression(
+                        &mut tracers.into(),
+                        transaction,
+                        false,
+                    );
+                    let trace = Arc::try_unwrap(call_tracer_result)
+                        .unwrap()
+                        .take()
+                        .unwrap_or_default();
+                    (res, trace)
+                });
+                results.push(result);
+            }
+            results
+        })
+            .await
+            .context("VM execution panicked")
     }
 }
 
@@ -228,6 +275,38 @@ impl<S: ReadStorage> VmSandbox<S> {
             storage_view,
             transaction: execution_args.transaction,
             execution_latency_histogram,
+        }
+    }
+
+    pub fn new_with_storage_view(
+        storage_view: StoragePtr<StorageView<S>>,
+        mut env: OneshotEnv,
+        execution_args: TxExecutionArgs,
+
+    ) -> Self {
+        let mut storage_mut = storage_view.borrow_mut();
+        Self::setup_storage_view(&mut storage_mut, &execution_args, env.current_block);
+        let protocol_version = env.system.version;
+        if execution_args.adjust_pubdata_price {
+            env.l1_batch.fee_input = adjust_pubdata_price_for_tx(
+                env.l1_batch.fee_input,
+                execution_args.transaction.gas_per_pubdata_byte_limit(),
+                env.l1_batch.enforced_base_fee.map(U256::from),
+                protocol_version.into(),
+            );
+        };
+        drop(storage_mut);
+        let vm = Box::new(LegacyVmInstance::new_with_specific_version(
+            env.l1_batch,
+            env.system,
+            storage_view.clone(),
+            protocol_version.into_api_vm_version(),
+        ));
+        Self {
+            vm,
+            storage_view,
+            transaction: execution_args.transaction,
+            execution_latency_histogram: None,
         }
     }
 
