@@ -173,6 +173,26 @@ impl SandboxExecutor {
         })
     }
 
+
+    pub async fn execute_txs_in_sandbox(
+        &self,
+        vm_permit: VmPermit,
+        execution_args: Vec<TxExecutionArgs>,
+        connection: Connection<'static, Core>,
+        action: SandboxAction,
+        block_args: BlockArgs,
+        state_override: Option<StateOverride>,
+    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
+        let (env, storage) =
+            self.prepare_env_and_storage(connection, &block_args,&action).await?;
+        let state_override = state_override.unwrap_or_default();
+        let storage = StorageWithOverrides::new(storage, &state_override);
+        let res = self
+            .inspect_transactions_with_bytecode_compression(storage, env, execution_args)
+            .await;
+        drop(vm_permit);
+        res
+    }
     pub(super) async fn prepare_env_and_storage(
         &self,
         mut connection: Connection<'static, Core>,
@@ -275,6 +295,33 @@ where
                         env,
                         args,
                         tracing_params,
+                    )
+                    .await
+            }
+        }
+    }
+    async fn inspect_transactions_with_bytecode_compression(
+        &self,
+        storage: S,
+        env: OneshotEnv,
+        args: Vec<TxExecutionArgs>,
+    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>>  {
+        match &self.engine {
+            SandboxExecutorEngine::Real(executor) => {
+                executor
+                    .inspect_transactions_with_bytecode_compression(
+                        storage,
+                        env,
+                        args,
+                    )
+                    .await
+            }
+            SandboxExecutorEngine::Mock(executor) => {
+                executor
+                    .inspect_transactions_with_bytecode_compression(
+                        storage,
+                        env,
+                        args,
                     )
                     .await
             }

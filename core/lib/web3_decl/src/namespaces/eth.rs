@@ -6,7 +6,7 @@ use zksync_types::{
         state_override::StateOverride, BlockId, BlockIdVariant, BlockNumber, FeeHistory,
         Transaction, TransactionVariant,
     },
-    transaction_request::CallRequest,
+    transaction_request::{CallRequest, MultiCallResp},
     Address, H256,
 };
 
@@ -40,7 +40,15 @@ pub trait EthNamespace {
         block: Option<BlockIdVariant>,
         state_override: Option<StateOverride>,
     ) -> RpcResult<Bytes>;
-
+    #[method(name = "multiCall")]
+    async fn multi_call(
+        &self,
+        requests: Vec<CallRequest>,
+        block: Option<BlockIdVariant>,
+        fast_fail: bool,
+        use_parallel: bool,
+        disable_cache: bool,
+    ) -> RpcResult<MultiCallResp>;
     #[method(name = "estimateGas")]
     async fn estimate_gas(
         &self,
@@ -75,7 +83,7 @@ pub trait EthNamespace {
 
     #[method(name = "getBalance")]
     async fn get_balance(&self, address: Address, block: Option<BlockIdVariant>)
-        -> RpcResult<U256>;
+                         -> RpcResult<U256>;
 
     #[method(name = "getBlockByNumber")]
     async fn get_block_by_number(
@@ -173,7 +181,7 @@ pub trait EthNamespace {
 
     #[method(name = "getUncleCountByBlockNumber")]
     async fn get_uncle_count_by_block_number(&self, number: BlockNumber)
-        -> RpcResult<Option<U256>>;
+                                             -> RpcResult<Option<U256>>;
 
     #[method(name = "mining")]
     async fn mining(&self) -> RpcResult<bool>;
@@ -198,7 +206,8 @@ mod pub_sub {
 
     #[rpc(server, namespace = "eth")]
     pub trait EthPubSub {
-        #[subscription(name = "subscribe" => "subscription", unsubscribe = "unsubscribe", item = PubSubResult)]
+        #[subscription(name = "subscribe" => "subscription", unsubscribe = "unsubscribe", item = PubSubResult
+        )]
         async fn subscribe(
             &self,
             sub_type: String,
