@@ -449,7 +449,6 @@ impl DebugNamespace {
             logs,
             logs_bloom: Default::default(),
             status: 1.into(),
-            root: Default::default(),
             effective_gas_price: Some(0.into()),
             l1_batch_tx_index: Default::default(),
             l1_batch_number: Default::default(),

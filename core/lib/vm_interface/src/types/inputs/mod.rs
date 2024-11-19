@@ -3,7 +3,7 @@ use zksync_types::{
 };
 
 pub use self::{
-    execution_mode::VmExecutionMode,
+    execution_mode::{InspectExecutionMode, VmExecutionMode},
     l1_batch_env::L1BatchEnv,
     l2_block::{L2BlockEnv, StoredL2BlockEnv},
     system_env::{SystemEnv, TxExecutionMode},
@@ -88,7 +88,7 @@ impl TxExecutionArgs {
 }
 
 /// Inputs and outputs for all tracers supported for oneshot transaction / call execution.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct OneshotTracingParams {
     /// Whether to trace contract calls.
     pub trace_calls: bool,

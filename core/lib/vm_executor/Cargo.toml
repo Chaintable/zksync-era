@@ -27,3 +27,4 @@ vise.workspace = true
 
 [dev-dependencies]
 assert_matches.workspace = true
+test-casing.workspace = true
