@@ -1,4 +1,3 @@
-
 use anyhow::anyhow;
 use anyhow::Context as _;
 use std::str::FromStr;
@@ -11,13 +10,14 @@ use zksync_types::{
         state_override::StateOverride, BlockId, BlockNumber, FeeHistory, GetLogsFilter,
         Transaction, TransactionId, TransactionReceipt, TransactionVariant,
     },
+    bytecode::{trim_padded_evm_bytecode, BytecodeMarker},
     l2::{L2Tx, TransactionType},
+    u256_to_h256,
     transaction_request::{CallRequest, CallResult, MultiCallErrorCode, MultiCallResp},
     utils::decompose_full_nonce,
     web3::{self, Bytes, SyncInfo, SyncState},
     AccountTreeId, L2BlockNumber, StorageKey, H160, H256, L2_BASE_TOKEN_ADDRESS, U256,
 };
-use zksync_utils::{bytecode::BytecodeMarker, u256_to_h256};
 use zksync_web3_decl::{
     error::Web3Error,
     types::{Address, Block, Filter, FilterChanges, Log, U64},
@@ -26,7 +26,7 @@ use zksync_web3_decl::{
 use crate::{
     execution_sandbox::BlockArgs,
     tx_sender::BinarySearchKind,
-    utils::{open_readonly_transaction, prepare_evm_bytecode},
+    utils::open_readonly_transaction,
     web3::{backend_jsonrpsee::MethodTracer, metrics::API_METRICS, state::RpcState, TypedFilter},
 };
 
@@ -583,12 +583,14 @@ impl EthNamespace {
         // Check if the bytecode is an EVM bytecode, and if so, pre-process it correspondingly.
         let marker = BytecodeMarker::new(contract_code.bytecode_hash);
         let prepared_bytecode = if marker == Some(BytecodeMarker::Evm) {
-            prepare_evm_bytecode(&contract_code.bytecode).with_context(|| {
-                format!(
-                    "malformed EVM bytecode at address {address:?}, hash = {:?}",
-                    contract_code.bytecode_hash
-                )
-            })?
+            trim_padded_evm_bytecode(&contract_code.bytecode)
+                .with_context(|| {
+                    format!(
+                        "malformed EVM bytecode at address {address:?}, hash = {:?}",
+                        contract_code.bytecode_hash
+                    )
+                })?
+                .to_vec()
         } else {
             contract_code.bytecode
         };
