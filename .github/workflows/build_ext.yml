@@ -3,7 +3,7 @@ name: "Release new ext"
 on:
   pull_request:
     branches:
-      - 'debank'
+      - 'core-v25.2.0-debank'
   workflow_dispatch:
 
 jobs:
