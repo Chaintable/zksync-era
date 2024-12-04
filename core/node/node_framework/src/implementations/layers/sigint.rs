@@ -60,7 +60,7 @@ impl Task for SigintHandlerTask {
                 // in listening to interrupt signals.
             }
         })
-            .expect("Error setting Ctrl+C handler");
+        .expect("Error setting Ctrl+C handler");
 
         // Wait for either SIGINT or stop signal.
         tokio::select! {
