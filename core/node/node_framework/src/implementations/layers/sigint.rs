@@ -1,5 +1,3 @@
-use tokio::sync::oneshot;
-
 use crate::{
     service::StopReceiver,
     task::{Task, TaskId, TaskKind},
@@ -50,25 +48,21 @@ impl Task for SigintHandlerTask {
     }
 
     async fn run(self: Box<Self>, mut stop_receiver: StopReceiver) -> anyhow::Result<()> {
-        let (sigint_sender, sigint_receiver) = oneshot::channel();
-        let mut sigint_sender = Some(sigint_sender); // Has to be done this way since `set_handler` requires `FnMut`.
-        ctrlc::set_handler(move || {
-            if let Some(sigint_sender) = sigint_sender.take() {
-                sigint_sender.send(()).ok();
-                // ^ The send fails if `sigint_receiver` is dropped. We're OK with this,
-                // since at this point the node should be stopping anyway, or is not interested
-                // in listening to interrupt signals.
-            }
-        })
-        .expect("Error setting Ctrl+C handler");
+        use tokio::signal::unix::{signal, SignalKind};
 
-        // Wait for either SIGINT or stop signal.
+        let mut sigint = signal(SignalKind::interrupt())?;
+        let mut sigterm = signal(SignalKind::terminate())?;
+
+        // Wait for either SIGINT/SIGTERM or stop signal.
         tokio::select! {
-            _ = sigint_receiver => {
+            _ = sigint.recv() => {
                 tracing::info!("Received SIGINT signal");
-            },
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("Received SIGTERM signal");
+            }
             _ = stop_receiver.0.changed() => {},
-        };
+        }
 
         Ok(())
     }
