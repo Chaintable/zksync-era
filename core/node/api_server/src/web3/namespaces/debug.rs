@@ -522,7 +522,9 @@ impl DebugNamespace {
             call: txs[0].clone(),
             fee_input: fee_input.clone(),
             enforced_base_fee: call_overrides.enforced_base_fee,
-            tracing_params: OneshotTracingParams::default(),
+            tracing_params: OneshotTracingParams {
+                trace_calls: true,
+            },
         };
         let results = executor
             .execute_txs_in_sandbox(

@@ -6,10 +6,7 @@
 //! In addition to it, the module provides [`OneshotEnvParameters`] and [`BlockInfo`] / [`ResolvedBlockInfo`],
 //! which can be used to prepare environment for `MainOneshotExecutor` (i.e., a [`OneshotEnv`] instance).
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::{Duration, Instant}};
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -185,8 +182,6 @@ where
             let mut results = Vec::new();
             let storage_view = StorageView::new(storage).to_rc_ptr();
             for args in args {
-                let call_tracer_result = Arc::new(OnceCell::default());
-
                 let executor =
                     VmSandbox{
                         fast_vm_mode: fast_vm_mode.clone(),
@@ -201,13 +196,9 @@ where
                         missed_storage_invocation_limit,
                         tracing_params.clone(),
                         transaction,
-                        false,
+                        true,
                     );
-                    let trace = Arc::try_unwrap(call_tracer_result)
-                        .unwrap()
-                        .take()
-                        .unwrap_or_default();
-                    (*temp_result.tx_result, trace)
+                    (*temp_result.tx_result, temp_result.call_traces)
                 });
                 results.push(result);
             }
