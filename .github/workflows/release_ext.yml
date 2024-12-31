@@ -2,34 +2,66 @@ name: "Release new ext"
 
 on:
   release:
-        types:
-          - created
+    types:
+      - created
   workflow_dispatch:
+
+env:
+  REGISTRY: 294354037686.dkr.ecr.ap-northeast-1.amazonaws.com
+  IMAGE: zksync_external
+  DOCKERFILE: docker/external-node/Dockerfile
 
 jobs:
   build-artifacts:
-    runs-on: [self-hosted, ops]
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: [self-hosted, "${{ matrix.arch }}"]
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v2
         with:
-          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Install latest nightly
         uses: actions-rs/toolchain@v1
         with:
-            toolchain: nightly
-            override: true
-            components: rustfmt, clippy
+          toolchain: nightly
+          override: true
+          components: rustfmt, clippy
 
       - name: Set env
         run: |
-              echo "REVISION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+          echo "REVISION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
 
       - name: Docker build and push
         run: |
-          git submodule update --init --recursive 
-          docker build -t 294354037686.dkr.ecr.ap-northeast-1.amazonaws.com/zksync_external:${REVISION} -f docker/external-node/Dockerfile .
-          docker push 294354037686.dkr.ecr.ap-northeast-1.amazonaws.com/zksync_external:${REVISION}
+          git submodule update --init --recursive
+          docker build -t ${REGISTRY}/${IMAGE}:${{ matrix.arch }}-${REVISION} -f ${DOCKERFILE} .
+          docker push ${REGISTRY}/${IMAGE}:${{ matrix.arch }}-${REVISION}
 
-    
+  merge-docker-manifest:
+    runs-on: [self-hosted, general]
+    needs: build-artifacts
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set env
+        run: |
+          echo "REVISION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+
+      - name: Merge manifest
+        run: |
+          docker pull --platform=linux/amd64 ${REGISTRY}/${IMAGE}:amd64-${REVISION}
+          docker pull --platform=linux/arm64 ${REGISTRY}/${IMAGE}:arm64-${REVISION}
+          docker buildx imagetools create --tag ${REGISTRY}/${IMAGE}:${REVISION} ${REGISTRY}/${IMAGE}:amd64-${REVISION} ${REGISTRY}/${IMAGE}:arm64-${REVISION}
+          docker rmi ${REGISTRY}/${IMAGE}:amd64-${REVISION}
+          docker rmi ${REGISTRY}/${IMAGE}:arm64-${REVISION}
+
+      - name: Lark Notification
+        continue-on-error: true
+        run: |
+          notiv3 "Blockchain zksync_external image pushed 🎉" ${REGISTRY}/${IMAGE}:${REVISION}
