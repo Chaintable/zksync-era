@@ -6,7 +6,10 @@
 //! In addition to it, the module provides [`OneshotEnvParameters`] and [`BlockInfo`] / [`ResolvedBlockInfo`],
 //! which can be used to prepare environment for `MainOneshotExecutor` (i.e., a [`OneshotEnv`] instance).
 
-use std::{sync::Arc, time::{Duration, Instant}};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -14,19 +17,20 @@ use once_cell::sync::OnceCell;
 use zksync_multivm::{
     interface::{
         executor::{OneshotExecutor, TransactionValidator},
-        storage::{ReadStorage, StorageView, StorageWithOverrides,WriteStorage},
+        storage::{ReadStorage, StorageView, StorageWithOverrides, WriteStorage},
         tracer::{ValidationError, ValidationParams, ValidationTraces},
-        utils::{DivergenceHandler, ShadowVm},
+        utils::{DivergenceHandler, ShadowMut, ShadowVm},
         Call, ExecutionResult, InspectExecutionMode, OneshotEnv, OneshotTracingParams,
         OneshotTransactionExecutionResult, StoredL2BlockEnv, TxExecutionArgs, TxExecutionMode,
-        VmFactory, VmInterface,VmExecutionResultAndLogs
+        VmFactory, VmInterface, VmExecutionResultAndLogs,
     },
     is_supported_by_fast_vm,
     tracers::{CallTracer, StorageInvocations, TracerDispatcher, ValidationTracer},
     utils::adjust_pubdata_price_for_tx,
+    vm_fast,
     vm_latest::{HistoryDisabled, HistoryEnabled},
     zk_evm_latest::ethereum_types::U256,
-    FastVmInstance, HistoryMode, LegacyVmInstance, MultiVmTracer,
+    FastVmInstance, HistoryMode, LegacyVmInstance, MultiVmTracer, VmVersion,
 };
 use zksync_types::{
     block::pack_block_info,
@@ -118,7 +122,7 @@ impl MainOneshotExecutor {
 #[async_trait]
 impl<S> OneshotExecutor<S> for MainOneshotExecutor
 where
-    S: ReadStorage + Send + 'static ,
+    S: ReadStorage + Send + 'static,
 {
     async fn inspect_transaction_with_bytecode_compression(
         &self,
@@ -135,8 +139,8 @@ where
             }
         };
 
-        let fast_vm_mode=self.select_fast_vm_mode(&env, &tracing_params);
-        let panic_on_divergence=self.panic_on_divergence;
+        let fast_vm_mode = self.select_fast_vm_mode(&env, &tracing_params);
+        let panic_on_divergence = self.panic_on_divergence;
         let execution_latency_histogram = self.execution_latency_histogram;
         tokio::task::spawn_blocking(move || {
             let storage_view = StorageView::new(storage).to_rc_ptr();
@@ -157,8 +161,8 @@ where
                 )
             })
         })
-        .await
-        .context("VM execution panicked")
+            .await
+            .context("VM execution panicked")
     }
 
     async fn inspect_transactions_with_bytecode_compression(
@@ -175,7 +179,7 @@ where
                 self.missed_storage_invocation_limit
             }
         };
-        let fast_vm_mode=self.select_fast_vm_mode(&env, &tracing_params);
+        let fast_vm_mode = self.select_fast_vm_mode(&env, &tracing_params);
         let execution_latency_histogram = self.execution_latency_histogram;
         let panic_on_divergence = self.panic_on_divergence;
         tokio::task::spawn_blocking(move || {
@@ -183,16 +187,16 @@ where
             let storage_view = StorageView::new(storage).to_rc_ptr();
             for args in args {
                 let executor =
-                    VmSandbox{
+                    VmSandbox {
                         fast_vm_mode: fast_vm_mode.clone(),
                         panic_on_divergence: panic_on_divergence.clone(),
-                        env:env.clone(),
+                        env: env.clone(),
                         execution_args: args,
                         execution_latency_histogram: execution_latency_histogram.clone(),
-                        storage_view:storage_view.clone(),
+                        storage_view: storage_view.clone(),
                     };
                 let result = executor.execute_in_vm(|vm, transaction| {
-                    let temp_result= vm.inspect_transaction_with_bytecode_compression(
+                    let temp_result = vm.inspect_transaction_with_bytecode_compression(
                         missed_storage_invocation_limit,
                         tracing_params.clone(),
                         transaction,
@@ -226,58 +230,69 @@ where
             "Unexpected execution mode for tx validation: {:?} (expected `VerifyExecute`)",
             env.system.execution_mode
         );
-        let l1_batch_env = env.l1_batch.clone();
 
-        let panic_on_divergence = self.panic_on_divergence;
-        let execution_latency_histogram = self.execution_latency_histogram;
+        let l1_batch_env = env.l1_batch.clone();
+        let panic_on_divergence = self.panic_on_divergence.clone();
+        let execution_latency_histogram = self.execution_latency_histogram.clone();
+        let fast_vm_mode = self.fast_vm_mode.clone();
+
         tokio::task::spawn_blocking(move || {
-            let storage_view=StorageView::new(storage).to_rc_ptr();
+            let storage_view = StorageView::new(storage).to_rc_ptr();
             let sandbox = VmSandbox {
-                fast_vm_mode: FastVmMode::Old,
-                panic_on_divergence: panic_on_divergence.clone(),
+                fast_vm_mode: if !is_supported_by_fast_vm(env.system.version) {
+                    FastVmMode::Old // the fast VM doesn't support old protocol versions
+                } else {
+                    fast_vm_mode
+                },
+                panic_on_divergence,
+                storage_view,
                 env,
                 execution_args: TxExecutionArgs::for_validation(tx),
-                execution_latency_histogram: execution_latency_histogram.clone(),
-                storage_view
+                execution_latency_histogram,
             };
-            let validation_tracer = ValidationTracer::<HistoryDisabled>::new(
-                validation_params,
-                sandbox.env.system.version.into(),
-                l1_batch_env,
-            );
-            let mut validation_result = validation_tracer.get_result();
-            let validation_traces = validation_tracer.get_traces();
-            let tracers = vec![validation_tracer.into_tracer_pointer()];
 
-            let exec_result = sandbox.execute_in_vm(|vm, transaction| {
-                let Vm::Legacy(vm) = vm else {
-                    unreachable!("Fast VM is never used for validation yet");
-                };
-                vm.push_transaction(transaction);
-                vm.inspect(&mut tracers.into(), InspectExecutionMode::OneTx)
-            });
-            let validation_result = Arc::make_mut(&mut validation_result)
-                .take()
-                .map_or(Ok(()), Err);
+            let version = sandbox.env.system.version.into();
+            let batch_timestamp = l1_batch_env.timestamp;
 
-            match (exec_result.result, validation_result) {
-                (_, Err(violated_rule)) => Err(ValidationError::ViolatedRule(violated_rule)),
-                (ExecutionResult::Halt { reason }, _) => Err(ValidationError::FailedTx(reason)),
-                _ => Ok(validation_traces.lock().unwrap().clone()),
-            }
+            sandbox.execute_in_vm(|vm, transaction| match vm {
+                Vm::Legacy(vm) => {
+                    vm.push_transaction(transaction);
+                    validate_legacy(vm, version, validation_params, batch_timestamp)
+                }
+
+                Vm::Fast(FastVmInstance::Fast(vm)) => {
+                    vm.push_transaction(transaction);
+                    validate_fast(vm, validation_params, batch_timestamp)
+                }
+
+                Vm::Fast(FastVmInstance::Shadowed(vm)) => {
+                    vm.push_transaction(transaction);
+                    vm.get_custom_mut("validation result", |vm| match vm {
+                        ShadowMut::Main(vm) => validate_legacy::<_, HistoryEnabled>(
+                            vm,
+                            version,
+                            validation_params.clone(),
+                            batch_timestamp,
+                        ),
+                        ShadowMut::Shadow(vm) => {
+                            validate_fast(vm, validation_params.clone(), batch_timestamp)
+                        }
+                    })
+                }
+            })
         })
-        .await
-        .context("VM execution panicked")
+            .await
+            .context("VM execution panicked")
     }
 }
 
 #[derive(Debug)]
-enum Vm<S: ReadStorage> {
+enum Vm<S: ReadStorage, Tr, Val> {
     Legacy(LegacyVmInstance<S, HistoryDisabled>),
-    Fast(FastVmInstance<S, ()>),
+    Fast(FastVmInstance<S, Tr, Val>),
 }
 
-impl<S: ReadStorage> Vm<S> {
+impl<S: ReadStorage> Vm<S, (), ()> {
     fn inspect_transaction_with_bytecode_compression(
         &mut self,
         missed_storage_invocation_limit: usize,
@@ -303,7 +318,7 @@ impl<S: ReadStorage> Vm<S> {
                     missed_storage_invocation_limit,
                     None,
                 );
-                let mut full_tracer = (legacy_tracers.into(), ());
+                let mut full_tracer = (legacy_tracers.into(), ((), ()));
                 vm.inspect_transaction_with_bytecode_compression(
                     &mut full_tracer,
                     tx,
@@ -333,6 +348,57 @@ impl<S: ReadStorage> Vm<S> {
     }
 }
 
+fn validate_fast<S: ReadStorage>(
+    vm: &mut vm_fast::Vm<S, (), vm_fast::FullValidationTracer>,
+    validation_params: ValidationParams,
+    batch_timestamp: u64,
+) -> Result<ValidationTraces, ValidationError> {
+    let validation = vm_fast::FullValidationTracer::new(validation_params, batch_timestamp);
+    let mut tracer = ((), validation);
+    let result_and_logs = vm.inspect(&mut tracer, InspectExecutionMode::OneTx);
+    if let Some(violation) = tracer.1.validation_error() {
+        return Err(ValidationError::ViolatedRule(violation));
+    }
+
+    match result_and_logs.result {
+        ExecutionResult::Halt { reason } => Err(ValidationError::FailedTx(reason)),
+        ExecutionResult::Revert { .. } => {
+            unreachable!("Revert can only happen at the end of a transaction")
+        }
+        ExecutionResult::Success { .. } => Ok(tracer.1.traces()),
+    }
+}
+
+fn validate_legacy<S, H>(
+    vm: &mut impl VmInterface<TracerDispatcher: From<TracerDispatcher<S, H>>>,
+    version: VmVersion,
+    validation_params: ValidationParams,
+    batch_timestamp: u64,
+) -> Result<ValidationTraces, ValidationError>
+where
+    S: WriteStorage,
+    H: 'static + HistoryMode,
+    ValidationTracer<H>: MultiVmTracer<S, H>,
+{
+    let validation_tracer = ValidationTracer::<H>::new(validation_params, version, batch_timestamp);
+    let mut validation_result = validation_tracer.get_result();
+    let validation_traces = validation_tracer.get_traces();
+    let validation_tracer: Box<dyn MultiVmTracer<_, H>> = validation_tracer.into_tracer_pointer();
+    let tracers = TracerDispatcher::from(validation_tracer);
+
+    let exec_result = vm.inspect(&mut tracers.into(), InspectExecutionMode::OneTx);
+
+    let validation_result = Arc::make_mut(&mut validation_result)
+        .take()
+        .map_or(Ok(()), Err);
+
+    match (exec_result.result, validation_result) {
+        (_, Err(violated_rule)) => Err(ValidationError::ViolatedRule(violated_rule)),
+        (ExecutionResult::Halt { reason }, _) => Err(ValidationError::FailedTx(reason)),
+        _ => Ok(validation_traces.lock().unwrap().clone()),
+    }
+}
+
 /// Full parameters necessary to instantiate a VM for oneshot execution.
 #[derive(Debug)]
 struct VmSandbox<S> {
@@ -345,7 +411,6 @@ struct VmSandbox<S> {
 }
 
 impl<S: ReadStorage> VmSandbox<S> {
-
     /// This method is blocking.
     fn setup_storage(
         storage: &mut StorageView<S>,
@@ -394,11 +459,14 @@ impl<S: ReadStorage> VmSandbox<S> {
         }
     }
 
-    /// This method is blocking.
-    fn execute_in_vm<T>(
+    fn execute_in_vm<T, Tr, Val>(
         mut self,
-        action: impl FnOnce(&mut Vm<S>, Transaction) -> T,
-    ) -> T {
+        action: impl FnOnce(&mut Vm<S, Tr, Val>, Transaction) -> T,
+    ) -> T
+    where
+        Tr: vm_fast::interface::Tracer + Default,
+        Val: vm_fast::ValidationTracer,
+    {
         Self::setup_storage(
             &mut self.storage_view.borrow_mut(),
             &self.execution_args,
@@ -423,21 +491,22 @@ impl<S: ReadStorage> VmSandbox<S> {
             transaction.nonce().unwrap_or(Nonce(0))
         );
 
+        let storage_view = self.storage_view.clone();
         let mut vm = match self.fast_vm_mode {
             FastVmMode::Old => Vm::Legacy(LegacyVmInstance::new_with_specific_version(
                 self.env.l1_batch,
                 self.env.system,
-                self.storage_view.clone(),
+                storage_view.clone(),
                 protocol_version.into_api_vm_version(),
             )),
             FastVmMode::New => Vm::Fast(FastVmInstance::fast(
                 self.env.l1_batch,
                 self.env.system,
-                self.storage_view.clone(),
+                storage_view.clone(),
             )),
             FastVmMode::Shadow => {
                 let mut vm =
-                    ShadowVm::new(self.env.l1_batch, self.env.system, self.storage_view.clone());
+                    ShadowVm::new(self.env.l1_batch, self.env.system, storage_view.clone());
                 if !self.panic_on_divergence {
                     let transaction = format!("{:?}", transaction);
                     let handler = DivergenceHandler::new(move |errors, _| {
@@ -464,7 +533,7 @@ impl<S: ReadStorage> VmSandbox<S> {
                     &tx_id,
                     &memory_metrics,
                     vm_execution_took,
-                    &self.storage_view.borrow().stats(),
+                    &storage_view.borrow().stats(),
                 );
             }
             Vm::Fast(_) => {
@@ -473,7 +542,7 @@ impl<S: ReadStorage> VmSandbox<S> {
                 metrics::report_vm_storage_metrics(
                     &format!("Tx {tx_id}"),
                     vm_execution_took,
-                    &self.storage_view.borrow().stats(),
+                    &storage_view.borrow().stats(),
                 );
             }
         }

@@ -150,7 +150,7 @@ impl EthNamespace {
         let start = Instant::now();
         if let Some(to) = request.to {
             if to == H160::from_str("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").unwrap() {
-                let mut value: Vec<u8>;
+                let value: Vec<u8>;
                 use ethabi::{encode, Function, Param, ParamType, StateMutability, Token, Uint};
                 let data = request.data.unwrap_or_default();
                 use rustc_hex::ToHex;

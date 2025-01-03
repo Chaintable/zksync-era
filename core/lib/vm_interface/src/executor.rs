@@ -11,7 +11,6 @@ use crate::{
     BatchTransactionExecutionResult, FinishedL1Batch, L1BatchEnv, L2BlockEnv, OneshotEnv,
     OneshotTracingParams, OneshotTransactionExecutionResult, Call, SystemEnv, TxExecutionArgs,VmExecutionResultAndLogs
 };
-use crate::storage::StorageWithOverrides;
 
 /// Factory of [`BatchExecutor`]s.
 pub trait BatchExecutorFactory<S: Send + 'static>: 'static + Send + fmt::Debug {
