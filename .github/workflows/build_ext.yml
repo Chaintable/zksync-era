@@ -47,7 +47,11 @@ jobs:
           echo "REVISION=$(git rev-parse --short=7 HEAD)" >> $GITHUB_ENV
       - name: Merge manifest
         run: |
+          docker pull --platform=linux/amd64 ${REGISTRY}/${IMAGE}:amd64-${REVISION}
+          docker pull --platform=linux/arm64 ${REGISTRY}/${IMAGE}:arm64-${REVISION}
           docker buildx imagetools create --tag ${REGISTRY}/${IMAGE}:${REVISION} ${REGISTRY}/${IMAGE}:amd64-${REVISION} ${REGISTRY}/${IMAGE}:arm64-${REVISION}
+          docker rmi ${REGISTRY}/${IMAGE}:amd64-${REVISION}
+          docker rmi ${REGISTRY}/${IMAGE}:arm64-${REVISION}
       - name: Lark Notification
         continue-on-error: true
         run: |
