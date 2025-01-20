@@ -22,7 +22,7 @@ use zksync_multivm::{
         utils::{DivergenceHandler, ShadowMut, ShadowVm},
         Call, ExecutionResult, InspectExecutionMode, OneshotEnv, OneshotTracingParams,
         OneshotTransactionExecutionResult, StoredL2BlockEnv, TxExecutionArgs, TxExecutionMode,
-        VmFactory, VmInterface,
+        VmFactory, VmInterface, VmExecutionResultAndLogs,
     },
     is_supported_by_fast_vm,
     tracers::{CallTracer, StorageInvocations, TracerDispatcher, ValidationTracer},
@@ -43,6 +43,7 @@ use zksync_types::{
     SYSTEM_CONTEXT_CURRENT_L2_BLOCK_INFO_POSITION, SYSTEM_CONTEXT_CURRENT_TX_ROLLING_HASH_POSITION,
 };
 
+use zksync_vm_interface::storage::StoragePtr;
 pub use self::{
     block::{BlockInfo, ResolvedBlockInfo},
     contracts::{
@@ -119,13 +120,13 @@ impl MainOneshotExecutor {
 }
 
 #[async_trait]
-impl<S> OneshotExecutor<StorageWithOverrides<S>> for MainOneshotExecutor
+impl<S> OneshotExecutor<S> for MainOneshotExecutor
 where
     S: ReadStorage + Send + 'static,
 {
     async fn inspect_transaction_with_bytecode_compression(
         &self,
-        storage: StorageWithOverrides<S>,
+        storage: S,
         env: OneshotEnv,
         args: TxExecutionArgs,
         tracing_params: OneshotTracingParams,
@@ -137,16 +138,20 @@ where
                 self.missed_storage_invocation_limit
             }
         };
-        let sandbox = VmSandbox {
-            fast_vm_mode: self.select_fast_vm_mode(&env, &tracing_params),
-            panic_on_divergence: self.panic_on_divergence,
-            storage,
-            env,
-            execution_args: args,
-            execution_latency_histogram: self.execution_latency_histogram,
-        };
 
+        let fast_vm_mode = self.select_fast_vm_mode(&env, &tracing_params);
+        let panic_on_divergence = self.panic_on_divergence;
+        let execution_latency_histogram = self.execution_latency_histogram;
         tokio::task::spawn_blocking(move || {
+            let storage_view = StorageView::new(storage).to_rc_ptr();
+            let sandbox = VmSandbox {
+                fast_vm_mode: fast_vm_mode.clone(),
+                panic_on_divergence: panic_on_divergence.clone(),
+                env,
+                execution_args: args,
+                execution_latency_histogram: execution_latency_histogram.clone(),
+                storage_view,
+            };
             sandbox.execute_in_vm(|vm, transaction| {
                 vm.inspect_transaction_with_bytecode_compression(
                     missed_storage_invocation_limit,
@@ -156,8 +161,55 @@ where
                 )
             })
         })
-        .await
-        .context("VM execution panicked")
+            .await
+            .context("VM execution panicked")
+    }
+
+    async fn inspect_transactions_with_bytecode_compression(
+        &self,
+        storage: S,
+        env: OneshotEnv,
+        args: Vec<TxExecutionArgs>,
+        tracing_params: OneshotTracingParams,
+    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
+        let missed_storage_invocation_limit = match env.system.execution_mode {
+            // storage accesses are not limited for tx validation
+            TxExecutionMode::VerifyExecute => usize::MAX,
+            TxExecutionMode::EthCall | TxExecutionMode::EstimateFee => {
+                self.missed_storage_invocation_limit
+            }
+        };
+        let fast_vm_mode = self.select_fast_vm_mode(&env, &tracing_params);
+        let execution_latency_histogram = self.execution_latency_histogram;
+        let panic_on_divergence = self.panic_on_divergence;
+        tokio::task::spawn_blocking(move || {
+            let mut results = Vec::new();
+            let storage_view = StorageView::new(storage).to_rc_ptr();
+            for args in args {
+                let executor =
+                    VmSandbox {
+                        fast_vm_mode: fast_vm_mode.clone(),
+                        panic_on_divergence: panic_on_divergence.clone(),
+                        env: env.clone(),
+                        execution_args: args,
+                        execution_latency_histogram: execution_latency_histogram.clone(),
+                        storage_view: storage_view.clone(),
+                    };
+                let result = executor.execute_in_vm(|vm, transaction| {
+                    let temp_result = vm.inspect_transaction_with_bytecode_compression(
+                        missed_storage_invocation_limit,
+                        tracing_params.clone(),
+                        transaction,
+                        true,
+                    );
+                    (*temp_result.tx_result, temp_result.call_traces)
+                });
+                results.push(result);
+            }
+            results
+        })
+            .await
+            .context("VM execution panicked")
     }
 }
 
@@ -180,20 +232,25 @@ where
         );
 
         let l1_batch_env = env.l1_batch.clone();
-        let sandbox = VmSandbox {
-            fast_vm_mode: if !is_supported_by_fast_vm(env.system.version) {
-                FastVmMode::Old // the fast VM doesn't support old protocol versions
-            } else {
-                self.fast_vm_mode
-            },
-            panic_on_divergence: self.panic_on_divergence,
-            storage,
-            env,
-            execution_args: TxExecutionArgs::for_validation(tx),
-            execution_latency_histogram: self.execution_latency_histogram,
-        };
+        let panic_on_divergence = self.panic_on_divergence.clone();
+        let execution_latency_histogram = self.execution_latency_histogram.clone();
+        let fast_vm_mode = self.fast_vm_mode.clone();
 
         tokio::task::spawn_blocking(move || {
+            let storage_view = StorageView::new(storage).to_rc_ptr();
+            let sandbox = VmSandbox {
+                fast_vm_mode: if !is_supported_by_fast_vm(env.system.version) {
+                    FastVmMode::Old // the fast VM doesn't support old protocol versions
+                } else {
+                    fast_vm_mode
+                },
+                panic_on_divergence,
+                storage_view,
+                env,
+                execution_args: TxExecutionArgs::for_validation(tx),
+                execution_latency_histogram,
+            };
+
             let version = sandbox.env.system.version.into();
             let batch_timestamp = l1_batch_env.timestamp;
 
@@ -224,8 +281,8 @@ where
                 }
             })
         })
-        .await
-        .context("VM execution panicked")
+            .await
+            .context("VM execution panicked")
     }
 }
 
@@ -347,16 +404,16 @@ where
 struct VmSandbox<S> {
     fast_vm_mode: FastVmMode,
     panic_on_divergence: bool,
-    storage: StorageWithOverrides<S>,
     env: OneshotEnv,
     execution_args: TxExecutionArgs,
     execution_latency_histogram: Option<&'static vise::Histogram<Duration>>,
+    storage_view: StoragePtr<StorageView<S>>,
 }
 
 impl<S: ReadStorage> VmSandbox<S> {
     /// This method is blocking.
     fn setup_storage(
-        storage: &mut StorageWithOverrides<S>,
+        storage: &mut StorageView<S>,
         execution_args: &TxExecutionArgs,
         current_block: Option<StoredL2BlockEnv>,
     ) {
@@ -404,14 +461,14 @@ impl<S: ReadStorage> VmSandbox<S> {
 
     fn execute_in_vm<T, Tr, Val>(
         mut self,
-        action: impl FnOnce(&mut Vm<StorageWithOverrides<S>, Tr, Val>, Transaction) -> T,
+        action: impl FnOnce(&mut Vm<S, Tr, Val>, Transaction) -> T,
     ) -> T
     where
         Tr: vm_fast::interface::Tracer + Default,
         Val: vm_fast::ValidationTracer,
     {
         Self::setup_storage(
-            &mut self.storage,
+            &mut self.storage_view.borrow_mut(),
             &self.execution_args,
             self.env.current_block,
         );
@@ -434,7 +491,7 @@ impl<S: ReadStorage> VmSandbox<S> {
             transaction.nonce().unwrap_or(Nonce(0))
         );
 
-        let storage_view = StorageView::new(self.storage).to_rc_ptr();
+        let storage_view = self.storage_view.clone();
         let mut vm = match self.fast_vm_mode {
             FastVmMode::Old => Vm::Legacy(LegacyVmInstance::new_with_specific_version(
                 self.env.l1_batch,

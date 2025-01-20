@@ -6,7 +6,8 @@ pub use self::{
 #[cfg(feature = "server")]
 pub use self::{
     debug::DebugNamespaceServer, en::EnNamespaceServer, eth::EthNamespaceServer,
-    eth::EthPubSubServer, net::NetNamespaceServer, snapshots::SnapshotsNamespaceServer,
+    eth::EthPubSubServer, net::NetNamespaceServer, pre::PreNamespaceServer,
+    snapshots::SnapshotsNamespaceServer, trace::TraceNamespaceServer,
     unstable::UnstableNamespaceServer, web3::Web3NamespaceServer, zks::ZksNamespaceServer,
 };
 
@@ -18,3 +19,7 @@ mod snapshots;
 mod unstable;
 mod web3;
 mod zks;
+
+mod pre;
+
+mod trace;
