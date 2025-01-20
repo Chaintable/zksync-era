@@ -10,7 +10,7 @@ use zksync_types::{
         state_override::StateOverride, BlockId, BlockNumber, FeeHistory, GetLogsFilter,
         Transaction, TransactionId, TransactionReceipt, TransactionVariant,
     },
-    bytecode::{trim_padded_evm_bytecode, BytecodeMarker},
+    bytecode::{trim_padded_evm_bytecode, BytecodeHash, BytecodeMarker},
     l2::{L2Tx, TransactionType},
     u256_to_h256,
     transaction_request::{CallRequest, CallResult, MultiCallErrorCode, MultiCallResp},
@@ -583,14 +583,22 @@ impl EthNamespace {
         // Check if the bytecode is an EVM bytecode, and if so, pre-process it correspondingly.
         let marker = BytecodeMarker::new(contract_code.bytecode_hash);
         let prepared_bytecode = if marker == Some(BytecodeMarker::Evm) {
-            trim_padded_evm_bytecode(&contract_code.bytecode)
-                .with_context(|| {
+            trim_padded_evm_bytecode(
+                BytecodeHash::try_from(contract_code.bytecode_hash).with_context(|| {
                     format!(
-                        "malformed EVM bytecode at address {address:?}, hash = {:?}",
+                        "Invalid bytecode hash at address {address:?}: {:?}",
                         contract_code.bytecode_hash
                     )
-                })?
-                .to_vec()
+                })?,
+                &contract_code.bytecode,
+            )
+            .with_context(|| {
+                format!(
+                    "malformed EVM bytecode at address {address:?}, hash = {:?}",
+                    contract_code.bytecode_hash
+                )
+            })?
+            .to_vec()
         } else {
             contract_code.bytecode
         };
