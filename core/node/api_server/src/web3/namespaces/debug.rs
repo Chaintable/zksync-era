@@ -48,6 +48,7 @@ impl DebugNamespace {
             }
         }
     }
+
     pub(crate) fn map_default_call(
         call: Call,
         only_top_call: bool,
