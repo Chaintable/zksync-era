@@ -36,7 +36,6 @@ use zksync_types::{
 use zksync_vm_executor::oneshot::{
     CallOrExecute, EstimateGas, MultiVmBaseSystemContracts, OneshotEnvParameters,
 };
-
 pub(super) use self::{gas_estimation::BinarySearchKind, result::SubmitTxError};
 use self::{master_pool_sink::MasterPoolSink, result::ApiCallResult, tx_sink::TxSink};
 use crate::execution_sandbox::{
@@ -637,6 +636,50 @@ impl TxSender {
             .execute_in_sandbox(vm_permit, connection, action, &block_args, state_override)
             .await?;
         result.vm.into_api_call_result()
+    }
+
+    pub(super) async fn eth_call_raw(
+        &self,
+        block_args: BlockArgs,
+        call_overrides: CallOverrides,
+        tx: L2Tx,
+        state_override: Option<StateOverride>,
+    ) -> Result<VmExecutionResultAndLogs, SubmitTxError> {
+        let vm_permit = self.0.vm_concurrency_limiter.acquire().await;
+        let vm_permit = vm_permit.ok_or(SubmitTxError::ServerShuttingDown)?;
+        let mut connection;
+        let fee_input = if block_args.resolves_to_latest_sealed_l2_block() {
+            let fee_input = self
+                .0
+                .batch_fee_input_provider
+                .get_batch_fee_input()
+                .await?;
+            // It is important to acquire a connection after calling the provider; see the comment above.
+            connection = self.acquire_replica_connection().await?;
+            fee_input
+        } else {
+            connection = self.acquire_replica_connection().await?;
+            block_args.historical_fee_input(&mut connection).await?
+        };
+
+        let action = SandboxAction::Call {
+            call:tx,
+            fee_input,
+            enforced_base_fee: call_overrides.enforced_base_fee,
+            tracing_params: OneshotTracingParams::default(),
+        };
+        let result = self
+            .0
+            .executor
+            .execute_in_sandbox(
+                vm_permit,
+                connection,
+                action,
+                &block_args,
+                state_override,
+            )
+            .await?;
+        Ok(result.vm)
     }
 
     pub async fn gas_price(&self) -> anyhow::Result<u64> {
