@@ -10,7 +10,7 @@ use zksync_types::{AccountTreeId, StorageKey, StorageValue, H256};
 use super::ReadStorage;
 
 /// A storage view that allows to override some of the storage values.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StorageWithOverrides<S> {
     storage_handle: S,
     overridden_slots: HashMap<StorageKey, H256>,
