@@ -1,10 +1,9 @@
-
 use anyhow::anyhow;
 use anyhow::Context as _;
 use std::str::FromStr;
 use std::time::Instant;
-use zksync_multivm::interface::ExecutionResult;
 use zksync_dal::{CoreDal, DalError};
+use zksync_multivm::interface::ExecutionResult;
 use zksync_system_constants::DEFAULT_L2_TX_GAS_PER_PUBDATA_BYTE;
 use zksync_types::{
     api::{
@@ -156,7 +155,7 @@ impl EthNamespace {
                 use rustc_hex::ToHex;
                 let serialized: String = data.0.to_hex::<String>();
                 if serialized.starts_with("06") || serialized.starts_with("95") {
-                    let t = Token::String("ETH".to_string());
+                    let t = Token::String("zkCRO".to_string());
                     value = encode(&[t]);
                 } else if serialized.starts_with("31") {
                     let t = Token::Uint(Uint::from(18u32));
@@ -230,7 +229,7 @@ impl EthNamespace {
         }
         drop(connection);
         let call_overrides = request.get_call_overrides()?;
-        let tx = L2Tx::from_request(request.into(), self.state.api_config.max_tx_size,false)?;
+        let tx = L2Tx::from_request(request.into(), self.state.api_config.max_tx_size, false)?;
         let call_result = self
             .state
             .tx_sender
