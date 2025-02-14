@@ -2,8 +2,8 @@ use anyhow::anyhow;
 use anyhow::Context as _;
 use std::str::FromStr;
 use std::time::Instant;
-use zksync_multivm::interface::ExecutionResult;
 use zksync_dal::{CoreDal, DalError};
+use zksync_multivm::interface::ExecutionResult;
 use zksync_system_constants::DEFAULT_L2_TX_GAS_PER_PUBDATA_BYTE;
 use zksync_types::{
     api::{
@@ -12,11 +12,11 @@ use zksync_types::{
     },
     bytecode::{trim_padded_evm_bytecode, BytecodeHash, BytecodeMarker},
     l2::{L2Tx, TransactionType},
-    u256_to_h256,
     transaction_request::{CallRequest, CallResult, MultiCallErrorCode, MultiCallResp},
+    u256_to_h256,
     utils::decompose_full_nonce,
     web3::{self, Bytes, SyncInfo, SyncState},
-    AccountTreeId, L2BlockNumber, StorageKey, H160, H256, L2_BASE_TOKEN_ADDRESS, U256,
+    AccountTreeId, L2BlockNumber, L2ChainId, StorageKey, H160, H256, L2_BASE_TOKEN_ADDRESS, U256,
 };
 use zksync_web3_decl::{
     error::Web3Error,
@@ -156,7 +156,11 @@ impl EthNamespace {
                 use rustc_hex::ToHex;
                 let serialized: String = data.0.to_hex::<String>();
                 if serialized.starts_with("06") || serialized.starts_with("95") {
-                    let t = Token::String("ETH".to_string());
+                    let mut t = Token::String("ETH".to_string()); // era, zero, abstract
+                    if self.state.api_config.l2_chain_id == L2ChainId::from(50104) {
+                        // sophon chain
+                        t = Token::String("SOPH".to_string());
+                    }
                     value = encode(&[t]);
                 } else if serialized.starts_with("31") {
                     let t = Token::Uint(Uint::from(18u32));
@@ -230,7 +234,7 @@ impl EthNamespace {
         }
         drop(connection);
         let call_overrides = request.get_call_overrides()?;
-        let tx = L2Tx::from_request(request.into(), self.state.api_config.max_tx_size,false)?;
+        let tx = L2Tx::from_request(request.into(), self.state.api_config.max_tx_size, false)?;
         let call_result = self
             .state
             .tx_sender
