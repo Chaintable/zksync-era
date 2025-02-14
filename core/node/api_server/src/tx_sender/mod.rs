@@ -11,7 +11,7 @@ use zksync_dal::{
 use zksync_multivm::{
     interface::{
         tracer::TimestampAsserterParams as TracerTimestampAsserterParams, OneshotTracingParams,
-        TransactionExecutionMetrics, VmExecutionResultAndLogs,
+        TransactionExecutionMetrics,
     },
     utils::{
         derive_base_fee_and_gas_per_pubdata, get_max_batch_gas_limit, get_max_new_factory_deps,
@@ -39,8 +39,8 @@ use zksync_vm_executor::oneshot::{
 pub(super) use self::{gas_estimation::BinarySearchKind, result::SubmitTxError};
 use self::{master_pool_sink::MasterPoolSink, result::ApiCallResult, tx_sink::TxSink};
 use crate::execution_sandbox::{
-    BlockArgs, SandboxAction, SandboxExecutor, SubmitTxStage, VmConcurrencyBarrier,
-    VmConcurrencyLimiter, SANDBOX_METRICS,
+    BlockArgs, SandboxAction, SandboxExecutionOutput, SandboxExecutor, SubmitTxStage,
+    VmConcurrencyBarrier, VmConcurrencyLimiter, SANDBOX_METRICS,
 };
 
 mod gas_estimation;
@@ -316,12 +316,12 @@ impl TxSender {
             .context("failed acquiring connection to replica DB")
     }
 
-    #[tracing::instrument(level = "debug", skip_all, fields(tx.hash = ?tx.hash()))]
-    pub async fn submit_tx(
+    #[tracing::instrument(level = "debug", name = "submit_tx", skip_all, fields(tx.hash = ?tx.hash()))]
+    pub(crate) async fn submit_tx(
         &self,
         tx: L2Tx,
         block_args: BlockArgs,
-    ) -> Result<(L2TxSubmissionResult, VmExecutionResultAndLogs), SubmitTxError> {
+    ) -> Result<SandboxExecutionOutput, SubmitTxError> {
         let tx_hash = tx.hash();
         let stage_latency = SANDBOX_METRICS.start_tx_submit_stage(tx_hash, SubmitTxStage::Validate);
         self.validate_tx(&tx, block_args.protocol_version()).await?;
@@ -380,7 +380,7 @@ impl TxSender {
         }
         let mut stage_latency =
             SANDBOX_METRICS.start_tx_submit_stage(tx_hash, SubmitTxStage::DbInsert);
-        self.ensure_tx_executable(&tx.clone().into(), &execution_output.metrics, true)?;
+        self.ensure_tx_executable(&tx.clone().into(), execution_output.metrics, true)?;
 
         let validation_traces = validation_result?;
         let submission_res_handle = self
@@ -411,11 +411,11 @@ impl TxSender {
             L2TxSubmissionResult::Proxied => {
                 stage_latency.set_stage(SubmitTxStage::TxProxy);
                 stage_latency.observe();
-                Ok((submission_res_handle, execution_output.vm))
+                Ok(execution_output)
             }
-            _ => {
+            L2TxSubmissionResult::Added | L2TxSubmissionResult::Replaced => {
                 stage_latency.observe();
-                Ok((submission_res_handle, execution_output.vm))
+                Ok(execution_output)
             }
         }
     }
@@ -635,7 +635,7 @@ impl TxSender {
             .executor
             .execute_in_sandbox(vm_permit, connection, action, &block_args, state_override)
             .await?;
-        result.vm.into_api_call_result()
+        result.result.into_api_call_result()
     }
 
     pub(super) async fn eth_call_raw(
@@ -644,7 +644,7 @@ impl TxSender {
         call_overrides: CallOverrides,
         tx: L2Tx,
         state_override: Option<StateOverride>,
-    ) -> Result<VmExecutionResultAndLogs, SubmitTxError> {
+    ) -> Result<SandboxExecutionOutput, SubmitTxError> {
         let vm_permit = self.0.vm_concurrency_limiter.acquire().await;
         let vm_permit = vm_permit.ok_or(SubmitTxError::ServerShuttingDown)?;
         let mut connection;
@@ -679,7 +679,7 @@ impl TxSender {
                 state_override,
             )
             .await?;
-        Ok(result.vm)
+        Ok(result)
     }
 
     pub async fn gas_price(&self) -> anyhow::Result<u64> {
@@ -701,7 +701,7 @@ impl TxSender {
     fn ensure_tx_executable(
         &self,
         transaction: &Transaction,
-        tx_metrics: &TransactionExecutionMetrics,
+        tx_metrics: TransactionExecutionMetrics,
         log_message: bool,
     ) -> Result<(), SubmitTxError> {
         // Hash is not computable for the provided `transaction` during gas estimation (it doesn't have
