@@ -88,7 +88,7 @@ impl TxExecutionArgs {
 }
 
 /// Inputs and outputs for all tracers supported for oneshot transaction / call execution.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct OneshotTracingParams {
     /// Whether to trace contract calls.
     pub trace_calls: bool,
