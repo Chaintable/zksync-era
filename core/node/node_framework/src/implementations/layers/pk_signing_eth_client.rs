@@ -19,19 +19,11 @@ use crate::{
 
 /// Wiring layer for [`PKSigningClient`].
 #[derive(Debug)]
-#[non_exhaustive]
-pub enum SigningEthClientType {
-    PKSigningEthClient,
-    GKMSSigningEthClient,
-}
-
-#[derive(Debug)]
 pub struct PKSigningEthClientLayer {
     eth_sender_config: EthConfig,
     contracts_config: ContractsConfig,
     gateway_chain_config: Option<GatewayChainConfig>,
     wallets: wallets::EthSender,
-    client_type: SigningEthClientType,
 }
 
 #[derive(Debug, FromContext)]
@@ -56,14 +48,12 @@ impl PKSigningEthClientLayer {
         contracts_config: ContractsConfig,
         gateway_chain_config: Option<GatewayChainConfig>,
         wallets: wallets::EthSender,
-        client_type: SigningEthClientType,
     ) -> Self {
         Self {
             eth_sender_config,
             contracts_config,
             gateway_chain_config,
             wallets,
-            client_type,
         }
     }
 }

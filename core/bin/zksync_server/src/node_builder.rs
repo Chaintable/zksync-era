@@ -46,7 +46,7 @@ use zksync_node_framework::{
             main_node_strategy::MainNodeInitStrategyLayer, NodeStorageInitializerLayer,
         },
         object_store::ObjectStoreLayer,
-        pk_signing_eth_client::{PKSigningEthClientLayer, SigningEthClientType},
+        pk_signing_eth_client::PKSigningEthClientLayer,
         pools_layer::PoolsLayerBuilder,
         postgres::PostgresLayer,
         prometheus_exporter::PrometheusExporterLayer,
@@ -175,7 +175,6 @@ impl MainNodeBuilder {
             self.contracts_config.clone(),
             self.gateway_chain_config.clone(),
             wallets,
-            client_type,
         ));
         Ok(self)
     }
