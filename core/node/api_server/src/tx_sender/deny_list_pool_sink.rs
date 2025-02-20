@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use zksync_dal::transactions_dal::L2TxSubmissionResult;
-use zksync_multivm::interface::TransactionExecutionMetrics;
+use zksync_multivm::interface::{tracer::ValidationTraces, TransactionExecutionMetrics};
 use zksync_types::{l2::L2Tx, Address};
 
 use super::{master_pool_sink::MasterPoolSink, tx_sink::TxSink, SubmitTxError};
@@ -29,12 +29,15 @@ impl TxSink for DenyListPoolSink {
         &self,
         tx: &L2Tx,
         execution_metrics: TransactionExecutionMetrics,
+        validation_traces: ValidationTraces,
     ) -> Result<L2TxSubmissionResult, SubmitTxError> {
         let address_and_nonce = (tx.initiator_account(), tx.nonce());
         if self.deny_list.contains(&address_and_nonce.0) {
             return Err(SubmitTxError::SenderInDenyList(tx.initiator_account()));
         }
 
-        self.master_pool_sync.submit_tx(tx, execution_metrics).await
+        self.master_pool_sync
+            .submit_tx(tx, execution_metrics, validation_traces)
+            .await
     }
 }

@@ -19,8 +19,8 @@ use zksync_config::{
 use zksync_contracts::BaseSystemContracts;
 use zksync_dal::{transactions_dal::L2TxSubmissionResult, Connection, ConnectionPool, CoreDal};
 use zksync_multivm::interface::{
-    TransactionExecutionMetrics, TransactionExecutionResult, TxExecutionStatus, VmEvent,
-    VmExecutionMetrics,
+    tracer::ValidationTraces, TransactionExecutionMetrics, TransactionExecutionResult,
+    TxExecutionStatus, VmEvent, VmExecutionMetrics,
 };
 use zksync_node_genesis::{insert_genesis_batch, mock_genesis_config, GenesisParams};
 use zksync_node_test_utils::{
@@ -32,7 +32,11 @@ use zksync_system_constants::{
 };
 use zksync_types::{
     api,
-    block::{pack_block_info, L2BlockHasher, L2BlockHeader},
+    block::{pack_block_info, L2BlockHasher, L2BlockHeader, UnsealedL1BatchHeader},
+    bytecode::{
+        testonly::{PADDED_EVM_BYTECODE, PROCESSED_EVM_BYTECODE},
+        BytecodeHash,
+    },
     fee_model::{BatchFeeInput, FeeParams},
     get_nonce_key,
     l2::L2Tx,
@@ -40,13 +44,10 @@ use zksync_types::{
     system_contracts::get_system_smart_contracts,
     tokens::{TokenInfo, TokenMetadata},
     tx::IncludedTxLocation,
+    u256_to_h256,
     utils::{storage_key_for_eth_balance, storage_key_for_standard_token_balance},
     AccountTreeId, Address, L1BatchNumber, Nonce, ProtocolVersionId, StorageKey, StorageLog, H256,
     U256, U64,
-};
-use zksync_utils::{
-    bytecode::{hash_bytecode, hash_evm_bytecode},
-    u256_to_h256,
 };
 use zksync_vm_executor::oneshot::MockOneshotExecutor;
 use zksync_web3_decl::{
@@ -64,11 +65,7 @@ use zksync_web3_decl::{
 };
 
 use super::*;
-use crate::{
-    testonly::{PROCESSED_EVM_BYTECODE, RAW_EVM_BYTECODE},
-    tx_sender::SandboxExecutorOptions,
-    web3::testonly::TestServerBuilder,
-};
+use crate::{tx_sender::SandboxExecutorOptions, web3::testonly::TestServerBuilder};
 
 mod debug;
 mod filters;
@@ -364,7 +361,11 @@ async fn store_custom_l2_block(
         let l2_tx = result.transaction.clone().try_into().unwrap();
         let tx_submission_result = storage
             .transactions_dal()
-            .insert_transaction_l2(&l2_tx, TransactionExecutionMetrics::default())
+            .insert_transaction_l2(
+                &l2_tx,
+                TransactionExecutionMetrics::default(),
+                ValidationTraces::default(),
+            )
             .await
             .unwrap();
         assert_matches!(tx_submission_result, L2TxSubmissionResult::Added);
@@ -394,6 +395,18 @@ async fn store_custom_l2_block(
         )
         .await?;
     Ok(())
+}
+
+async fn open_l1_batch(
+    storage: &mut Connection<'_, Core>,
+    number: L1BatchNumber,
+    batch_fee_input: BatchFeeInput,
+) -> anyhow::Result<UnsealedL1BatchHeader> {
+    let mut header = create_l1_batch(number.0);
+    header.batch_fee_input = batch_fee_input;
+    let header = header.to_unsealed_header();
+    storage.blocks_dal().insert_l1_batch(header.clone()).await?;
+    Ok(header)
 }
 
 async fn seal_l1_batch(
@@ -675,7 +688,7 @@ impl HttpTest for StorageAccessWithSnapshotRecovery {
     fn storage_initialization(&self) -> StorageInitialization {
         let address = Address::repeat_byte(1);
         let code_key = get_code_key(&address);
-        let code_hash = hash_bytecode(&[0; 32]);
+        let code_hash = BytecodeHash::for_bytecode(&[0; 32]).value();
         let balance_key = storage_key_for_eth_balance(&address);
         let logs = vec![
             StorageLog::new_write_log(code_key, code_hash),
@@ -771,7 +784,11 @@ impl HttpTest for TransactionCountTest {
         pending_tx.common_data.nonce = Nonce(2);
         storage
             .transactions_dal()
-            .insert_transaction_l2(&pending_tx, TransactionExecutionMetrics::default())
+            .insert_transaction_l2(
+                &pending_tx,
+                TransactionExecutionMetrics::default(),
+                ValidationTraces::default(),
+            )
             .await
             .unwrap();
 
@@ -851,7 +868,11 @@ impl HttpTest for TransactionCountAfterSnapshotRecoveryTest {
         let mut storage = pool.connection().await?;
         storage
             .transactions_dal()
-            .insert_transaction_l2(&pending_tx, TransactionExecutionMetrics::default())
+            .insert_transaction_l2(
+                &pending_tx,
+                TransactionExecutionMetrics::default(),
+                ValidationTraces::default(),
+            )
             .await
             .unwrap();
 
@@ -1162,14 +1183,16 @@ impl GetBytecodeTest {
         at_block: L2BlockNumber,
         address: Address,
     ) -> anyhow::Result<()> {
-        let evm_bytecode_hash = hash_evm_bytecode(RAW_EVM_BYTECODE);
+        let evm_bytecode_hash =
+            BytecodeHash::for_evm_bytecode(PROCESSED_EVM_BYTECODE.len(), PADDED_EVM_BYTECODE)
+                .value();
         let code_log = StorageLog::new_write_log(get_code_key(&address), evm_bytecode_hash);
         connection
             .storage_logs_dal()
             .append_storage_logs(at_block, &[code_log])
             .await?;
 
-        let factory_deps = HashMap::from([(evm_bytecode_hash, RAW_EVM_BYTECODE.to_vec())]);
+        let factory_deps = HashMap::from([(evm_bytecode_hash, PADDED_EVM_BYTECODE.to_vec())]);
         connection
             .factory_deps_dal()
             .insert_factory_deps(at_block, &factory_deps)
@@ -1304,7 +1327,7 @@ impl HttpTest for FeeHistoryTest {
         .map(U256::from);
 
         let history = client
-            .fee_history(1_000.into(), api::BlockNumber::Latest, vec![])
+            .fee_history(1_000.into(), api::BlockNumber::Latest, Some(vec![]))
             .await?;
         assert_eq!(history.inner.oldest_block, 0.into());
         assert_eq!(
@@ -1337,7 +1360,11 @@ impl HttpTest for FeeHistoryTest {
 
         // Check partial histories: blocks 0..=1
         let history = client
-            .fee_history(1_000.into(), api::BlockNumber::Number(1.into()), vec![])
+            .fee_history(
+                1_000.into(),
+                api::BlockNumber::Number(1.into()),
+                Some(vec![]),
+            )
             .await?;
         assert_eq!(history.inner.oldest_block, 0.into());
         assert_eq!(
@@ -1348,7 +1375,7 @@ impl HttpTest for FeeHistoryTest {
 
         // Blocks 1..=2
         let history = client
-            .fee_history(2.into(), api::BlockNumber::Latest, vec![])
+            .fee_history(2.into(), api::BlockNumber::Latest, Some(vec![]))
             .await?;
         assert_eq!(history.inner.oldest_block, 1.into());
         assert_eq!(
@@ -1359,7 +1386,7 @@ impl HttpTest for FeeHistoryTest {
 
         // Blocks 1..=1
         let history = client
-            .fee_history(1.into(), api::BlockNumber::Number(1.into()), vec![])
+            .fee_history(1.into(), api::BlockNumber::Number(1.into()), Some(vec![]))
             .await?;
         assert_eq!(history.inner.oldest_block, 1.into());
         assert_eq!(history.inner.base_fee_per_gas, [100, 100].map(U256::from));
@@ -1367,7 +1394,11 @@ impl HttpTest for FeeHistoryTest {
 
         // Non-existing newest block.
         let err = client
-            .fee_history(1000.into(), api::BlockNumber::Number(100.into()), vec![])
+            .fee_history(
+                1000.into(),
+                api::BlockNumber::Number(100.into()),
+                Some(vec![]),
+            )
             .await
             .unwrap_err();
         assert_matches!(

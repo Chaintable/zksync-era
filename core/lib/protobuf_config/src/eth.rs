@@ -1,7 +1,7 @@
 use anyhow::Context as _;
 use zksync_config::configs::{self};
 use zksync_protobuf::{required, ProtoRepr};
-use zksync_types::pubdata_da::PubdataSendingMode;
+use zksync_types::{pubdata_da::PubdataSendingMode, settlement::SettlementMode};
 
 use crate::{proto::eth as proto, read_optional_repr};
 
@@ -45,20 +45,20 @@ impl proto::PubdataSendingMode {
     }
 }
 
-impl proto::SigningMode {
-    fn new(x: &configs::eth_sender::SigningMode) -> Self {
-        use configs::eth_sender::SigningMode as From;
+impl proto::SettlementMode {
+    fn new(x: &SettlementMode) -> Self {
+        use SettlementMode as From;
         match x {
-            From::PrivateKey => Self::PrivateKey,
-            From::GcloudKms => Self::GcloudKms,
+            From::SettlesToL1 => Self::SettlesToL1,
+            From::Gateway => Self::Gateway,
         }
     }
 
-    fn parse(&self) -> configs::eth_sender::SigningMode {
-        use configs::eth_sender::SigningMode as To;
+    fn parse(&self) -> SettlementMode {
+        use SettlementMode as To;
         match self {
-            Self::PrivateKey => To::PrivateKey,
-            Self::GcloudKms => To::GcloudKms,
+            Self::SettlesToL1 => To::SettlesToL1,
+            Self::Gateway => To::Gateway,
         }
     }
 }
@@ -87,13 +87,6 @@ impl ProtoRepr for proto::Sender {
     type Type = configs::eth_sender::SenderConfig;
     fn read(&self) -> anyhow::Result<Self::Type> {
         Ok(Self::Type {
-            aggregated_proof_sizes: self
-                .aggregated_proof_sizes
-                .iter()
-                .enumerate()
-                .map(|(i, x)| (*x).try_into().context(i))
-                .collect::<Result<_, _>>()
-                .context("aggregated_proof_sizes")?,
             wait_confirmations: self.wait_confirmations,
             tx_poll_period: *required(&self.tx_poll_period).context("tx_poll_period")?,
             aggregate_tx_poll_period: *required(&self.aggregate_tx_poll_period)
@@ -135,10 +128,7 @@ impl ProtoRepr for proto::Sender {
             time_in_mempool_in_l1_blocks_cap: self
                 .time_in_mempool_in_l1_blocks_cap
                 .unwrap_or(Self::Type::default_time_in_mempool_in_l1_blocks_cap()),
-            signing_mode: required(&self.signing_mode)
-                .and_then(|x| Ok(proto::SigningMode::try_from(*x)?))
-                .context("signing_mode")?
-                .parse(),
+            is_verifier_pre_fflonk: self.is_verifier_pre_fflonk.unwrap_or(true),
             max_acceptable_base_fee_in_wei: *required(&self.max_acceptable_base_fee_in_wei)
                 .context("max_acceptable_base_fee_in_wei")?,
         })
@@ -146,11 +136,6 @@ impl ProtoRepr for proto::Sender {
 
     fn build(this: &Self::Type) -> Self {
         Self {
-            aggregated_proof_sizes: this
-                .aggregated_proof_sizes
-                .iter()
-                .map(|x| (*x).try_into().unwrap())
-                .collect(),
             wait_confirmations: this.wait_confirmations,
             tx_poll_period: Some(this.tx_poll_period),
             aggregate_tx_poll_period: Some(this.aggregate_tx_poll_period),
@@ -174,7 +159,7 @@ impl ProtoRepr for proto::Sender {
             tx_aggregation_only_prove_and_execute: Some(this.tx_aggregation_only_prove_and_execute),
             tx_aggregation_paused: Some(this.tx_aggregation_paused),
             time_in_mempool_in_l1_blocks_cap: Some(this.time_in_mempool_in_l1_blocks_cap),
-            signing_mode: Some(proto::SigningMode::new(&this.signing_mode).into()),
+            is_verifier_pre_fflonk: Some(this.is_verifier_pre_fflonk),
             max_acceptable_base_fee_in_wei: Some(this.max_acceptable_base_fee_in_wei),
         }
     }
@@ -209,8 +194,12 @@ impl ProtoRepr for proto::GasAdjuster {
             )
             .context("internal_pubdata_pricing_multiplier")?,
             max_blob_base_fee: self.max_blob_base_fee,
-            // TODO(EVM-676): support this field
-            settlement_mode: Default::default(),
+            settlement_mode: self
+                .settlement_mode
+                .map(proto::SettlementMode::try_from)
+                .transpose()?
+                .map(|x| x.parse())
+                .unwrap_or_default(),
         })
     }
 
@@ -232,6 +221,7 @@ impl ProtoRepr for proto::GasAdjuster {
             ),
             internal_pubdata_pricing_multiplier: Some(this.internal_pubdata_pricing_multiplier),
             max_blob_base_fee: this.max_blob_base_fee,
+            settlement_mode: Some(proto::SettlementMode::new(&this.settlement_mode).into()),
         }
     }
 }

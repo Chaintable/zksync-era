@@ -1,21 +1,22 @@
-use std::{collections::HashSet, iter};
+use std::iter;
 
 use assert_matches::assert_matches;
 use ethabi::Token;
 use zk_evm_1_3_1::zkevm_opcode_defs::decoding::{EncodingModeProduction, VmEncodingMode};
 use zksync_system_constants::CONTRACT_DEPLOYER_ADDRESS;
-use zksync_test_account::{Account, TxType};
-use zksync_types::{AccountTreeId, Address, Execute, StorageKey, H256, U256};
-use zksync_utils::{bytecode::hash_bytecode, h256_to_u256};
+use zksync_test_contracts::{Account, TestContract, TxType};
+use zksync_types::{
+    bytecode::BytecodeHash, h256_to_u256, AccountTreeId, Address, Execute, StorageKey, H256, U256,
+};
 
 use super::{
-    read_proxy_counter_contract, read_test_contract,
     tester::{VmTester, VmTesterBuilder},
-    TestedVm, BASE_SYSTEM_CONTRACTS,
+    TestedVm,
 };
 use crate::{
     interface::{
-        ExecutionResult, TxExecutionMode, VmExecutionMode, VmExecutionResultAndLogs, VmInterfaceExt,
+        ExecutionResult, InspectExecutionMode, TxExecutionMode, VmExecutionResultAndLogs,
+        VmInterfaceExt,
     },
     versions::testonly::ContractToDeploy,
 };
@@ -27,15 +28,15 @@ pub(crate) fn test_get_used_contracts<VM: TestedVm>() {
         .with_rich_accounts(1)
         .build::<VM>();
 
-    assert!(known_bytecodes_without_base_system_contracts(&vm.vm).is_empty());
+    assert!(vm.vm.known_bytecode_hashes().is_empty());
 
     // create and push and execute some not-empty factory deps transaction with success status
     // to check that `get_decommitted_hashes()` updates
-    let contract_code = read_test_contract();
+    let contract_code = TestContract::counter().bytecode;
     let account = &mut vm.rich_accounts[0];
-    let tx = account.get_deploy_tx(&contract_code, None, TxType::L1 { serial_id: 0 });
+    let tx = account.get_deploy_tx(contract_code, None, TxType::L1 { serial_id: 0 });
     vm.vm.push_transaction(tx.tx.clone());
-    let result = vm.vm.execute(VmExecutionMode::OneTx);
+    let result = vm.vm.execute(InspectExecutionMode::OneTx);
     assert!(!result.result.is_failed());
 
     assert!(vm
@@ -44,10 +45,7 @@ pub(crate) fn test_get_used_contracts<VM: TestedVm>() {
         .contains(&h256_to_u256(tx.bytecode_hash)));
 
     // Note: `Default_AA` will be in the list of used contracts if L2 tx is used
-    assert_eq!(
-        vm.vm.decommitted_hashes(),
-        known_bytecodes_without_base_system_contracts(&vm.vm)
-    );
+    assert_eq!(vm.vm.decommitted_hashes(), vm.vm.known_bytecode_hashes());
 
     // create push and execute some non-empty factory deps transaction that fails
     // (`known_bytecodes` will be updated but we expect `get_decommitted_hashes()` to not be updated)
@@ -73,34 +71,21 @@ pub(crate) fn test_get_used_contracts<VM: TestedVm>() {
 
     vm.vm.push_transaction(tx2.clone());
 
-    let res2 = vm.vm.execute(VmExecutionMode::OneTx);
+    let res2 = vm.vm.execute(InspectExecutionMode::OneTx);
 
     assert!(res2.result.is_failed());
 
     for factory_dep in tx2.execute.factory_deps {
-        let hash = hash_bytecode(&factory_dep);
-        let hash_to_u256 = h256_to_u256(hash);
-        assert!(known_bytecodes_without_base_system_contracts(&vm.vm).contains(&hash_to_u256));
+        let hash_to_u256 = BytecodeHash::for_bytecode(&factory_dep).value_u256();
+        assert!(vm.vm.known_bytecode_hashes().contains(&hash_to_u256));
         assert!(!vm.vm.decommitted_hashes().contains(&hash_to_u256));
     }
-}
-
-fn known_bytecodes_without_base_system_contracts(vm: &impl TestedVm) -> HashSet<U256> {
-    let mut known_bytecodes_without_base_system_contracts = vm.known_bytecode_hashes();
-    known_bytecodes_without_base_system_contracts
-        .remove(&h256_to_u256(BASE_SYSTEM_CONTRACTS.default_aa.hash));
-    if let Some(evm_emulator) = &BASE_SYSTEM_CONTRACTS.evm_emulator {
-        let was_removed =
-            known_bytecodes_without_base_system_contracts.remove(&h256_to_u256(evm_emulator.hash));
-        assert!(was_removed);
-    }
-    known_bytecodes_without_base_system_contracts
 }
 
 /// Counter test contract bytecode inflated by appending lots of `NOP` opcodes at the end. This leads to non-trivial
 /// decommitment cost (>10,000 gas).
 fn inflated_counter_bytecode() -> Vec<u8> {
-    let mut counter_bytecode = read_test_contract();
+    let mut counter_bytecode = TestContract::counter().bytecode.to_vec();
     counter_bytecode.extend(
         iter::repeat(EncodingModeProduction::nop_encoding().to_be_bytes())
             .take(10_000)
@@ -119,7 +104,7 @@ fn execute_proxy_counter<VM: TestedVm>(
     gas: u32,
 ) -> (VmTester<VM>, ProxyCounterData, VmExecutionResultAndLogs) {
     let counter_bytecode = inflated_counter_bytecode();
-    let counter_bytecode_hash = h256_to_u256(hash_bytecode(&counter_bytecode));
+    let counter_bytecode_hash = BytecodeHash::for_bytecode(&counter_bytecode).value_u256();
     let counter_address = Address::repeat_byte(0x23);
 
     let mut vm = VmTesterBuilder::new()
@@ -132,10 +117,9 @@ fn execute_proxy_counter<VM: TestedVm>(
         .with_rich_accounts(1)
         .build::<VM>();
 
-    let (proxy_counter_bytecode, proxy_counter_abi) = read_proxy_counter_contract();
     let account = &mut vm.rich_accounts[0];
     let deploy_tx = account.get_deploy_tx(
-        &proxy_counter_bytecode,
+        TestContract::proxy_counter().bytecode,
         Some(&[Token::Address(counter_address)]),
         TxType::L2,
     );
@@ -151,7 +135,7 @@ fn execute_proxy_counter<VM: TestedVm>(
         "{decommitted_hashes:?}"
     );
 
-    let increment = proxy_counter_abi.function("increment").unwrap();
+    let increment = TestContract::proxy_counter().function("increment");
     let increment_tx = account.get_l2_tx_for_execute(
         Execute {
             contract_address: Some(deploy_tx.address),
@@ -195,8 +179,7 @@ pub(crate) fn test_get_used_contracts_with_out_of_gas_far_call<VM: TestedVm>() {
 
     // Execute another transaction with a successful far call and check that it's still charged for decommitment.
     let account = &mut vm.rich_accounts[0];
-    let (_, proxy_counter_abi) = read_proxy_counter_contract();
-    let increment = proxy_counter_abi.function("increment").unwrap();
+    let increment = TestContract::proxy_counter().function("increment");
     let increment_tx = account.get_l2_tx_for_execute(
         Execute {
             contract_address: Some(data.proxy_counter_address),

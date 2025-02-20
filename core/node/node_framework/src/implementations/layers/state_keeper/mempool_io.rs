@@ -4,7 +4,7 @@ use zksync_config::configs::{
     wallets,
 };
 use zksync_state_keeper::{MempoolFetcher, MempoolGuard, MempoolIO, SequencerSealer};
-use zksync_types::L2ChainId;
+use zksync_types::{commitment::PubdataType, Address, L2ChainId};
 
 use crate::{
     implementations::resources::{
@@ -39,6 +39,8 @@ pub struct MempoolIOLayer {
     state_keeper_config: StateKeeperConfig,
     mempool_config: MempoolConfig,
     wallets: wallets::StateKeeper,
+    l2_da_validator_addr: Option<Address>,
+    pubdata_type: PubdataType,
 }
 
 #[derive(Debug, FromContext)]
@@ -63,12 +65,16 @@ impl MempoolIOLayer {
         state_keeper_config: StateKeeperConfig,
         mempool_config: MempoolConfig,
         wallets: wallets::StateKeeper,
+        l2_da_validator_addr: Option<Address>,
+        pubdata_type: PubdataType,
     ) -> Self {
         Self {
             zksync_network_id,
             state_keeper_config,
             mempool_config,
             wallets,
+            l2_da_validator_addr,
+            pubdata_type,
         }
     }
 
@@ -129,6 +135,8 @@ impl WiringLayer for MempoolIOLayer {
             self.wallets.fee_account.address(),
             self.mempool_config.delay_interval(),
             self.zksync_network_id,
+            self.l2_da_validator_addr,
+            self.pubdata_type,
         )?;
 
         // Create sealer.

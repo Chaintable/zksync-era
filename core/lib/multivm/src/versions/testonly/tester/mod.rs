@@ -1,23 +1,25 @@
-use std::{collections::HashSet, fmt};
+use std::{collections::HashSet, fmt, rc::Rc};
 
 use zksync_contracts::BaseSystemContracts;
-use zksync_test_account::{Account, TxType};
+use zksync_test_contracts::{Account, TestContract, TxType};
 use zksync_types::{
+    l2::L2Tx,
     utils::{deployed_address_create, storage_key_for_eth_balance},
     writes::StateDiffRecord,
     Address, L1BatchNumber, StorageKey, Transaction, H256, U256,
 };
-use zksync_vm_interface::{
-    CurrentExecutionState, VmExecutionResultAndLogs, VmInterfaceHistoryEnabled,
-};
+use zksync_vm_interface::Call;
 
 pub(crate) use self::transaction_test_info::{ExpectedError, TransactionTestInfo, TxModifier};
-use super::{get_empty_storage, read_test_contract};
+use super::get_empty_storage;
 use crate::{
     interface::{
+        pubdata::{PubdataBuilder, PubdataInput},
         storage::{InMemoryStorage, StoragePtr, StorageView},
-        L1BatchEnv, L2BlockEnv, SystemEnv, TxExecutionMode, VmExecutionMode, VmFactory,
-        VmInterfaceExt,
+        tracer::{ValidationParams, ViolatedValidationRule},
+        CurrentExecutionState, InspectExecutionMode, L1BatchEnv, L2BlockEnv, SystemEnv,
+        TxExecutionMode, VmExecutionResultAndLogs, VmFactory, VmInterfaceExt,
+        VmInterfaceHistoryEnabled,
     },
     versions::testonly::{
         default_l1_batch, default_system_env, make_address_rich, ContractToDeploy,
@@ -39,12 +41,12 @@ pub(crate) struct VmTester<VM> {
 
 impl<VM: TestedVm> VmTester<VM> {
     pub(crate) fn deploy_test_contract(&mut self) {
-        let contract = read_test_contract();
+        let contract = TestContract::counter().bytecode;
         let account = &mut self.rich_accounts[0];
-        let tx = account.get_deploy_tx(&contract, None, TxType::L2).tx;
+        let tx = account.get_deploy_tx(contract, None, TxType::L2).tx;
         let nonce = tx.nonce().unwrap().0.into();
         self.vm.push_transaction(tx);
-        self.vm.execute(VmExecutionMode::OneTx);
+        self.vm.execute(InspectExecutionMode::OneTx);
         let deployed_address = deployed_address_create(account.address, nonce);
         self.test_contract = Some(deployed_address);
     }
@@ -187,15 +189,17 @@ pub(crate) trait TestedVm:
     /// Unlike [`Self::known_bytecode_hashes()`], the output should only include successfully decommitted bytecodes.
     fn decommitted_hashes(&self) -> HashSet<U256>;
 
-    fn execute_with_state_diffs(
+    fn finish_batch_with_state_diffs(
         &mut self,
         diffs: Vec<StateDiffRecord>,
-        mode: VmExecutionMode,
+        pubdata_builder: Rc<dyn PubdataBuilder>,
     ) -> VmExecutionResultAndLogs;
+
+    fn finish_batch_without_pubdata(&mut self) -> VmExecutionResultAndLogs;
 
     fn insert_bytecodes(&mut self, bytecodes: &[&[u8]]);
 
-    /// Includes bytecodes that have failed to decommit.
+    /// Includes bytecodes that have failed to decommit. Should exclude base system contract bytecodes (default AA / EVM emulator).
     fn known_bytecode_hashes(&self) -> HashSet<U256>;
 
     /// Returns `true` iff the decommit is fresh.
@@ -226,4 +230,30 @@ pub(crate) trait TestedVm:
 
     /// Pushes a transaction with predefined refund value.
     fn push_transaction_with_refund(&mut self, tx: Transaction, refund: u64);
+
+    /// Returns pubdata input.
+    fn pubdata_input(&self) -> PubdataInput;
+}
+
+pub(crate) trait TestedVmForValidation {
+    fn run_validation(&mut self, tx: L2Tx, timestamp: u64) -> Option<ViolatedValidationRule>;
+}
+
+pub(crate) fn validation_params(tx: &L2Tx, system: &SystemEnv) -> ValidationParams {
+    let user_address = tx.common_data.initiator_address;
+    let paymaster_address = tx.common_data.paymaster_params.paymaster;
+    ValidationParams {
+        user_address,
+        paymaster_address,
+        trusted_slots: Default::default(),
+        trusted_addresses: Default::default(),
+        // field `trustedAddress` of ValidationRuleBreaker
+        trusted_address_slots: [(Address::repeat_byte(0x10), 2.into())].into(),
+        computational_gas_limit: system.default_validation_computational_gas_limit,
+        timestamp_asserter_params: None,
+    }
+}
+
+pub(crate) trait TestedVmWithCallTracer: TestedVm {
+    fn inspect_with_call_tracer(&mut self) -> (VmExecutionResultAndLogs, Vec<Call>);
 }

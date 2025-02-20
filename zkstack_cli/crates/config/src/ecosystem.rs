@@ -3,11 +3,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use common::{config::global_config, logger};
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
-use types::{L1Network, ProverMode, WalletCreation};
 use xshell::Shell;
+use zkstack_cli_common::{config::global_config, logger};
+use zkstack_cli_types::{L1Network, ProverMode, WalletCreation};
 use zksync_basic_types::L2ChainId;
 
 use crate::{
@@ -178,6 +178,7 @@ impl EcosystemConfig {
                 .artifacts_path
                 .unwrap_or_else(|| self.get_chain_artifacts_path(name)),
             legacy_bridge: config.legacy_bridge,
+            evm_emulator: config.evm_emulator,
         })
     }
 
@@ -212,7 +213,7 @@ impl EcosystemConfig {
         ContractsConfig::read(self.get_shell(), self.config.join(CONTRACTS_FILE))
     }
 
-    pub fn path_to_foundry(&self) -> PathBuf {
+    pub fn path_to_l1_foundry(&self) -> PathBuf {
         self.link_to_code.join(L1_CONTRACTS_FOUNDRY)
     }
 
@@ -232,7 +233,11 @@ impl EcosystemConfig {
     }
 
     pub fn get_default_configs_path(&self) -> PathBuf {
-        self.link_to_code.join(CONFIGS_PATH)
+        Self::default_configs_path(&self.link_to_code)
+    }
+
+    pub fn default_configs_path(link_to_code: &Path) -> PathBuf {
+        link_to_code.join(CONFIGS_PATH)
     }
 
     /// Path to the predefined ecosystem configs

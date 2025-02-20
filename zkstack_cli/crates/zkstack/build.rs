@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context};
 use ethers::contract::Abigen;
+use xshell::{cmd, Shell};
 
 const COMPLETION_DIR: &str = "completion";
 
@@ -14,20 +15,16 @@ fn main() -> anyhow::Result<()> {
         .write_to_file(outdir.join("consensus_registry_abi.rs"))
         .context("Failed to write ABI to file")?;
 
+    if let Err(e) = build_dependencies() {
+        println!("cargo:error=It was not possible to install projects dependencies");
+        println!("cargo:error={}", e);
+    }
+
     if let Err(e) = configure_shell_autocompletion() {
         println!("cargo:warning=It was not possible to install autocomplete scripts. Please generate them manually with `zkstack autocomplete`");
         println!("cargo:error={}", e);
     };
 
-    zksync_protobuf_build::Config {
-        input_root: "src/commands/consensus/proto".into(),
-        proto_root: "zksync/toolbox/consensus".into(),
-        dependencies: vec!["::zksync_protobuf_config::proto".parse().unwrap()],
-        protobuf_crate: "::zksync_protobuf".parse().unwrap(),
-        is_public: false,
-    }
-    .generate()
-    .unwrap();
     Ok(())
 }
 
@@ -106,15 +103,22 @@ impl ShellAutocomplete for clap_complete::Shell {
                         .context(format!("could not read .{}rc", shell))?;
 
                     if !shell_rc_content.contains("# zkstack completion") {
-                        std::fs::write(
-                            shell_rc,
+                        let completion_snippet = if shell == "zsh" {
+                            format!(
+                                "{}\n# zkstack completion\nautoload -Uz compinit\ncompinit\nsource \"{}\"\n",
+                                shell_rc_content,
+                                completion_file.to_str().unwrap()
+                            )
+                        } else {
                             format!(
                                 "{}\n# zkstack completion\nsource \"{}\"\n",
                                 shell_rc_content,
                                 completion_file.to_str().unwrap()
-                            ),
-                        )
-                        .context(format!("could not write .{}rc", shell))?;
+                            )
+                        };
+
+                        std::fs::write(shell_rc, completion_snippet)
+                            .context(format!("could not write .{}rc", shell))?;
                     }
                 } else {
                     println!(
@@ -129,4 +133,15 @@ impl ShellAutocomplete for clap_complete::Shell {
 
         Ok(())
     }
+}
+
+fn build_dependencies() -> anyhow::Result<()> {
+    let shell = Shell::new()?;
+    let code_dir = Path::new("../");
+
+    let _dir_guard = shell.push_dir(code_dir);
+
+    cmd!(shell, "yarn install")
+        .run()
+        .context("Failed to install dependencies")
 }

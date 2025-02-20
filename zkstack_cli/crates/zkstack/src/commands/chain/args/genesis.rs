@@ -1,10 +1,10 @@
 use anyhow::Context;
 use clap::Parser;
-use common::{db::DatabaseConfig, Prompt};
-use config::ChainConfig;
 use serde::{Deserialize, Serialize};
 use slugify_rs::slugify;
 use url::Url;
+use zkstack_cli_common::{db::DatabaseConfig, Prompt};
+use zkstack_cli_config::ChainConfig;
 
 use crate::{
     defaults::{generate_db_names, DBNames, DATABASE_SERVER_URL},
@@ -21,7 +21,7 @@ pub struct GenesisArgs {
     #[clap(long, help = MSG_SERVER_DB_NAME_HELP)]
     pub server_db_name: Option<String>,
     #[clap(long, short, help = MSG_USE_DEFAULT_DATABASES_HELP)]
-    pub use_default: bool,
+    pub dev: bool,
     #[clap(long, short, action)]
     pub dont_drop: bool,
 }
@@ -30,7 +30,7 @@ impl GenesisArgs {
     pub fn fill_values_with_prompt(self, config: &ChainConfig) -> GenesisArgsFinal {
         let DBNames { server_name, .. } = generate_db_names(config);
         let chain_name = config.name.clone();
-        if self.use_default {
+        if self.dev {
             GenesisArgsFinal {
                 server_db: DatabaseConfig::new(DATABASE_SERVER_URL.clone(), server_name),
                 dont_drop: self.dont_drop,
@@ -56,18 +56,16 @@ impl GenesisArgs {
         }
     }
 
-    pub fn fill_values_with_secrets(
+    pub async fn fill_values_with_secrets(
         mut self,
         chain_config: &ChainConfig,
     ) -> anyhow::Result<GenesisArgsFinal> {
-        let secrets = chain_config.get_secrets_config()?;
-        let database = secrets
-            .database
-            .context("Database secrets must be present")?;
+        let secrets = chain_config.get_secrets_config().await?;
+        let server_url = secrets.get_opt::<Url>("database.server_url")?;
 
-        let (server_db_url, server_db_name) = if let Some(db_full_url) = database.server_url {
-            let db_config = DatabaseConfig::from_url(db_full_url.expose_url())
-                .context("Invalid server database URL")?;
+        let (server_db_url, server_db_name) = if let Some(db_full_url) = &server_url {
+            let db_config =
+                DatabaseConfig::from_url(db_full_url).context("Invalid server database URL")?;
             (Some(db_config.url), Some(db_config.name))
         } else {
             (None, None)

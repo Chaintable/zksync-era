@@ -1,19 +1,19 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use common::{forge::ForgeScriptArgs, Prompt, PromptConfirm};
 use serde::{Deserialize, Serialize};
-use types::L1Network;
 use url::Url;
+use zkstack_cli_common::{forge::ForgeScriptArgs, Prompt, PromptConfirm};
+use zkstack_cli_types::L1Network;
 
 use crate::{
-    commands::chain::args::genesis::GenesisArgs,
+    commands::chain::args::{genesis::GenesisArgs, init::da_configs::ValidiumTypeArgs},
     defaults::LOCAL_RPC_URL,
     messages::{
         MSG_DEPLOY_ECOSYSTEM_PROMPT, MSG_DEPLOY_ERC20_PROMPT, MSG_DEV_ARG_HELP,
-        MSG_GENESIS_ARGS_HELP, MSG_L1_RPC_URL_HELP, MSG_L1_RPC_URL_INVALID_ERR,
-        MSG_L1_RPC_URL_PROMPT, MSG_NO_PORT_REALLOCATION_HELP, MSG_OBSERVABILITY_HELP,
-        MSG_OBSERVABILITY_PROMPT,
+        MSG_L1_RPC_URL_HELP, MSG_L1_RPC_URL_INVALID_ERR, MSG_L1_RPC_URL_PROMPT,
+        MSG_NO_PORT_REALLOCATION_HELP, MSG_OBSERVABILITY_HELP, MSG_OBSERVABILITY_PROMPT,
+        MSG_SERVER_DB_NAME_HELP, MSG_SERVER_DB_URL_HELP,
     },
 };
 
@@ -86,21 +86,43 @@ pub struct EcosystemInitArgs {
     /// Deploy Paymaster contract
     #[clap(long, default_missing_value = "true", num_args = 0..=1)]
     pub deploy_paymaster: Option<bool>,
-    #[clap(flatten, next_help_heading = MSG_GENESIS_ARGS_HELP)]
-    #[serde(flatten)]
-    pub genesis_args: GenesisArgs,
+    #[clap(long, help = MSG_SERVER_DB_URL_HELP)]
+    pub server_db_url: Option<Url>,
+    #[clap(long, help = MSG_SERVER_DB_NAME_HELP)]
+    pub server_db_name: Option<String>,
+    #[clap(long, short, action)]
+    pub dont_drop: bool,
     /// Initialize ecosystem only and skip chain initialization (chain can be initialized later with `chain init` subcommand)
     #[clap(long, default_value_t = false)]
     pub ecosystem_only: bool,
     #[clap(long, help = MSG_DEV_ARG_HELP)]
     pub dev: bool,
-    #[clap(long, short = 'o', help = MSG_OBSERVABILITY_HELP, default_missing_value = "true", num_args = 0..=1)]
+    #[clap(
+        long, short = 'o', help = MSG_OBSERVABILITY_HELP, default_missing_value = "true", num_args = 0..=1
+    )]
     pub observability: Option<bool>,
     #[clap(long, help = MSG_NO_PORT_REALLOCATION_HELP)]
     pub no_port_reallocation: bool,
+    #[clap(long)]
+    pub update_submodules: Option<bool>,
+    #[clap(flatten)]
+    pub validium_args: ValidiumTypeArgs,
+    #[clap(long, default_missing_value = "false", num_args = 0..=1)]
+    pub support_l2_legacy_shared_bridge_test: Option<bool>,
+    #[clap(long, default_missing_value = "false")]
+    pub skip_contract_compilation_override: bool,
 }
 
 impl EcosystemInitArgs {
+    pub fn get_genesis_args(&self) -> GenesisArgs {
+        GenesisArgs {
+            server_db_url: self.server_db_url.clone(),
+            server_db_name: self.server_db_name.clone(),
+            dev: self.dev,
+            dont_drop: self.dont_drop,
+        }
+    }
+
     pub fn fill_values_with_prompt(self, l1_network: L1Network) -> EcosystemInitArgsFinal {
         let deploy_erc20 = if self.dev {
             true
@@ -130,6 +152,11 @@ impl EcosystemInitArgs {
             observability,
             ecosystem_only: self.ecosystem_only,
             no_port_reallocation: self.no_port_reallocation,
+            skip_contract_compilation_override: self.skip_contract_compilation_override,
+            validium_args: self.validium_args,
+            support_l2_legacy_shared_bridge_test: self
+                .support_l2_legacy_shared_bridge_test
+                .unwrap_or_default(),
         }
     }
 }
@@ -143,4 +170,7 @@ pub struct EcosystemInitArgsFinal {
     pub observability: bool,
     pub ecosystem_only: bool,
     pub no_port_reallocation: bool,
+    pub skip_contract_compilation_override: bool,
+    pub validium_args: ValidiumTypeArgs,
+    pub support_l2_legacy_shared_bridge_test: bool,
 }

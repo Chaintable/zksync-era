@@ -1,14 +1,16 @@
 use ethabi::Token;
-use zksync_contracts::{get_loadnext_contract, test_contracts::LoadnextContractExecutionParams};
-use zksync_test_account::{DeployContractsTx, TxType};
+use zksync_test_contracts::{
+    DeployContractsTx, LoadnextContractExecutionParams, TestContract, TxType,
+};
 use zksync_types::{get_nonce_key, U256};
+use zksync_vm_interface::InspectExecutionMode;
 
 use super::TestedLatestVm;
 use crate::{
     interface::{
         storage::WriteStorage,
         tracer::{TracerExecutionStatus, TracerExecutionStopReason},
-        TxExecutionMode, VmExecutionMode, VmInterface, VmInterfaceExt, VmInterfaceHistoryEnabled,
+        TxExecutionMode, VmInterface, VmInterfaceExt, VmInterfaceHistoryEnabled,
     },
     tracers::dynamic::vm_1_5_0::DynTracer,
     versions::testonly::{
@@ -16,7 +18,7 @@ use crate::{
         VmTesterBuilder,
     },
     vm_latest::{
-        types::internals::ZkSyncVmState, BootloaderState, HistoryEnabled, HistoryMode,
+        bootloader::BootloaderState, types::ZkSyncVmState, HistoryEnabled, HistoryMode,
         SimpleMemory, ToTracerPointer, Vm, VmTracer,
     },
 };
@@ -57,7 +59,7 @@ impl<S: WriteStorage, H: HistoryMode> VmTracer<S, H> for MaxRecursionTracer {
 }
 
 #[test]
-fn test_layered_rollback() {
+fn layered_rollback() {
     // This test checks that the layered rollbacks work correctly, i.e.
     // the rollback by the operator will always revert all the changes
 
@@ -68,25 +70,24 @@ fn test_layered_rollback() {
         .build::<TestedLatestVm>();
 
     let account = &mut vm.rich_accounts[0];
-    let loadnext_contract = get_loadnext_contract().bytecode;
 
     let DeployContractsTx {
         tx: deploy_tx,
         address,
         ..
     } = account.get_deploy_tx(
-        &loadnext_contract,
+        TestContract::load_test().bytecode,
         Some(&[Token::Uint(0.into())]),
         TxType::L2,
     );
     vm.vm.push_transaction(deploy_tx);
-    let deployment_res = vm.vm.execute(VmExecutionMode::OneTx);
+    let deployment_res = vm.vm.execute(InspectExecutionMode::OneTx);
     assert!(!deployment_res.result.is_failed(), "transaction failed");
 
     let loadnext_transaction = account.get_loadnext_transaction(
         address,
         LoadnextContractExecutionParams {
-            writes: 1,
+            initial_writes: 1,
             recursive_calls: 20,
             ..LoadnextContractExecutionParams::empty()
         },
@@ -107,7 +108,8 @@ fn test_layered_rollback() {
         max_recursion_depth: 15,
     }
     .into_tracer_pointer();
-    vm.vm.inspect(&mut tracer.into(), VmExecutionMode::OneTx);
+    vm.vm
+        .inspect(&mut tracer.into(), InspectExecutionMode::OneTx);
 
     let nonce_val2 = vm
         .vm
@@ -134,7 +136,7 @@ fn test_layered_rollback() {
     );
 
     vm.vm.push_transaction(loadnext_transaction);
-    let result = vm.vm.execute(VmExecutionMode::OneTx);
+    let result = vm.vm.execute(InspectExecutionMode::OneTx);
     assert!(!result.result.is_failed(), "transaction must not fail");
 }
 

@@ -1,9 +1,9 @@
-use zksync_test_account::Account;
+use zksync_test_contracts::{Account, TestContract};
 use zksync_types::{Execute, ExecuteTransactionCommon, Nonce};
 
-use super::{read_nonce_holder_tester, tester::VmTesterBuilder, ContractToDeploy, TestedVm};
+use super::{tester::VmTesterBuilder, ContractToDeploy, TestedVm};
 use crate::interface::{
-    ExecutionResult, Halt, TxExecutionMode, TxRevertReason, VmExecutionMode, VmInterfaceExt,
+    ExecutionResult, Halt, InspectExecutionMode, TxExecutionMode, TxRevertReason, VmInterfaceExt,
     VmRevertReason,
 };
 
@@ -53,7 +53,7 @@ fn run_nonce_test(
     };
     tx_data.signature = vec![test_mode.into()];
     vm.push_transaction(transaction);
-    let result = vm.execute(VmExecutionMode::OneTx);
+    let result = vm.execute(InspectExecutionMode::OneTx);
 
     if let Some(msg) = error_message {
         let expected_error =
@@ -80,7 +80,7 @@ pub(crate) fn test_nonce_holder<VM: TestedVm>() {
     let account_address = builder.rich_account(0).address;
     let mut vm = builder
         .with_custom_contracts(vec![ContractToDeploy::account(
-            read_nonce_holder_tester(),
+            TestContract::nonce_holder().bytecode.to_vec(),
             account_address,
         )])
         .build::<VM>();
