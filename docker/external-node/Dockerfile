@@ -6,4 +6,4 @@ RUN cargo build --manifest-path ./core/Cargo.toml --release --bin zksync_externa
 
 FROM matterlabs/external-node:v26.2.1-alpha
 
-COPY --from=builder /usr/src/zksync/target/release/zksync_external_node /usr/bin
+COPY --from=builder /usr/src/zksync/core/target/release/zksync_external_node /usr/bin
