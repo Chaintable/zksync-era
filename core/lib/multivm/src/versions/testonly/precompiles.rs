@@ -1,16 +1,17 @@
-use circuit_sequencer_api_1_5_0::geometry_config::get_geometry_config;
+use circuit_sequencer_api::geometry_config::ProtocolGeometry;
+use zksync_test_contracts::TestContract;
 use zksync_types::{Address, Execute};
 
-use super::{read_precompiles_contract, tester::VmTesterBuilder, TestedVm};
+use super::{tester::VmTesterBuilder, TestedVm};
 use crate::{
-    interface::{TxExecutionMode, VmExecutionMode, VmInterfaceExt},
+    interface::{InspectExecutionMode, TxExecutionMode, VmInterfaceExt},
     versions::testonly::ContractToDeploy,
     vm_latest::constants::BATCH_COMPUTATIONAL_GAS_LIMIT,
 };
 
 pub(crate) fn test_keccak<VM: TestedVm>() {
     // Execute special transaction and check that at least 1000 keccak calls were made.
-    let contract = read_precompiles_contract();
+    let contract = TestContract::precompiles_test().bytecode.to_vec();
     let address = Address::repeat_byte(1);
     let mut vm = VmTesterBuilder::new()
         .with_empty_in_memory_storage()
@@ -36,17 +37,19 @@ pub(crate) fn test_keccak<VM: TestedVm>() {
     );
     vm.vm.push_transaction(tx);
 
-    let exec_result = vm.vm.execute(VmExecutionMode::OneTx);
+    let exec_result = vm.vm.execute(InspectExecutionMode::OneTx);
     assert!(!exec_result.result.is_failed(), "{exec_result:#?}");
 
     let keccak_count = exec_result.statistics.circuit_statistic.keccak256
-        * get_geometry_config().cycles_per_keccak256_circuit as f32;
+        * ProtocolGeometry::V1_5_0
+            .config()
+            .cycles_per_keccak256_circuit as f32;
     assert!(keccak_count >= 1000.0, "{keccak_count}");
 }
 
 pub(crate) fn test_sha256<VM: TestedVm>() {
     // Execute special transaction and check that at least 1000 `sha256` calls were made.
-    let contract = read_precompiles_contract();
+    let contract = TestContract::precompiles_test().bytecode.to_vec();
     let address = Address::repeat_byte(1);
     let mut vm = VmTesterBuilder::new()
         .with_empty_in_memory_storage()
@@ -72,11 +75,11 @@ pub(crate) fn test_sha256<VM: TestedVm>() {
     );
     vm.vm.push_transaction(tx);
 
-    let exec_result = vm.vm.execute(VmExecutionMode::OneTx);
+    let exec_result = vm.vm.execute(InspectExecutionMode::OneTx);
     assert!(!exec_result.result.is_failed(), "{exec_result:#?}");
 
     let sha_count = exec_result.statistics.circuit_statistic.sha256
-        * get_geometry_config().cycles_per_sha256_circuit as f32;
+        * ProtocolGeometry::V1_5_0.config().cycles_per_sha256_circuit as f32;
     assert!(sha_count >= 1000.0, "{sha_count}");
 }
 
@@ -101,10 +104,12 @@ pub(crate) fn test_ecrecover<VM: TestedVm>() {
     );
     vm.vm.push_transaction(tx);
 
-    let exec_result = vm.vm.execute(VmExecutionMode::OneTx);
+    let exec_result = vm.vm.execute(InspectExecutionMode::OneTx);
     assert!(!exec_result.result.is_failed(), "{exec_result:#?}");
 
     let ecrecover_count = exec_result.statistics.circuit_statistic.ecrecover
-        * get_geometry_config().cycles_per_ecrecover_circuit as f32;
+        * ProtocolGeometry::V1_5_0
+            .config()
+            .cycles_per_ecrecover_circuit as f32;
     assert!((ecrecover_count - 1.0).abs() < 1e-4, "{ecrecover_count}");
 }

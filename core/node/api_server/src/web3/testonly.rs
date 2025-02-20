@@ -15,7 +15,7 @@ use zksync_vm_executor::oneshot::MockOneshotExecutor;
 use super::{metrics::ApiTransportLabel, *};
 use crate::{
     execution_sandbox::SandboxExecutor,
-    tx_sender::{SandboxExecutorOptions, TxSenderConfig,TxSenderBuilderConfigs},
+    tx_sender::{SandboxExecutorOptions, TxSenderBuilderConfigs, TxSenderConfig},
 };
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(90);
@@ -34,6 +34,7 @@ pub(crate) async fn create_test_tx_sender(
         &web3_config,
         wallets.state_keeper.unwrap().fee_account.address(),
         l2_chain_id,
+        None,
     );
 
     let config = TxSenderBuilderConfigs {

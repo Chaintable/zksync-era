@@ -1,19 +1,20 @@
 //! This module provides a "builder" for the main node,
 //! as well as an interface to run the node with the specified components.
 
-use anyhow::Context;
+use std::time::Duration;
+
+use anyhow::{bail, Context};
 use zksync_config::{
     configs::{
-        da_client::DAClientConfig, secrets::DataAvailabilitySecrets, wallets::Wallets,
-        eth_sender::SigningMode,
-        GeneralConfig, Secrets,
+        da_client::DAClientConfig, gateway::GatewayChainConfig, secrets::DataAvailabilitySecrets,
+        wallets::Wallets, GeneralConfig, Secrets,
     },
     ContractsConfig, GenesisConfig,
 };
 use zksync_core_leftovers::Component;
 use zksync_metadata_calculator::MetadataCalculatorConfig;
 use zksync_node_api_server::{
-    tx_sender::TxSenderConfig,
+    tx_sender::{TimestampAsserterParams, TxSenderConfig},
     web3::{state::InternalApiConfig, Namespace},
 };
 use zksync_node_framework::{
@@ -27,8 +28,8 @@ use zksync_node_framework::{
         consensus::MainNodeConsensusLayer,
         contract_verification_api::ContractVerificationApiLayer,
         da_clients::{
-            avail::AvailWiringLayer, no_da::NoDAClientWiringLayer,
-            object_store::ObjectStorageClientWiringLayer,
+            avail::AvailWiringLayer, celestia::CelestiaWiringLayer, eigen::EigenWiringLayer,
+            no_da::NoDAClientWiringLayer, object_store::ObjectStorageClientWiringLayer,
         },
         da_dispatcher::DataAvailabilityDispatcherLayer,
         eth_sender::{EthTxAggregatorLayer, EthTxManagerLayer},
@@ -47,7 +48,7 @@ use zksync_node_framework::{
         object_store::ObjectStoreLayer,
         pk_signing_eth_client::{PKSigningEthClientLayer, SigningEthClientType},
         pools_layer::PoolsLayerBuilder,
-        postgres_metrics::PostgresMetricsLayer,
+        postgres::PostgresLayer,
         prometheus_exporter::PrometheusExporterLayer,
         proof_data_handler::ProofDataHandlerLayer,
         query_eth_client::QueryEthClientLayer,
@@ -71,7 +72,10 @@ use zksync_node_framework::{
     service::{ZkStackService, ZkStackServiceBuilder},
 };
 use zksync_types::{
-    pubdata_da::PubdataSendingMode, settlement::SettlementMode, SHARED_BRIDGE_ETHER_TOKEN_ADDRESS,
+    commitment::{L1BatchCommitmentMode, PubdataType},
+    pubdata_da::PubdataSendingMode,
+    settlement::SettlementMode,
+    SHARED_BRIDGE_ETHER_TOKEN_ADDRESS,
 };
 use zksync_vlog::prometheus::PrometheusExporterConfig;
 /// Macro that looks into a path to fetch an optional config,
@@ -88,6 +92,7 @@ pub struct MainNodeBuilder {
     wallets: Wallets,
     genesis_config: GenesisConfig,
     contracts_config: ContractsConfig,
+    gateway_chain_config: Option<GatewayChainConfig>,
     secrets: Secrets,
 }
 
@@ -97,6 +102,7 @@ impl MainNodeBuilder {
         wallets: Wallets,
         genesis_config: GenesisConfig,
         contracts_config: ContractsConfig,
+        gateway_chain_config: Option<GatewayChainConfig>,
         secrets: Secrets,
     ) -> anyhow::Result<Self> {
         Ok(Self {
@@ -105,12 +111,31 @@ impl MainNodeBuilder {
             wallets,
             genesis_config,
             contracts_config,
+            gateway_chain_config,
             secrets,
         })
     }
 
     pub fn runtime_handle(&self) -> tokio::runtime::Handle {
         self.node.runtime_handle()
+    }
+
+    pub fn get_pubdata_type(&self) -> anyhow::Result<PubdataType> {
+        if self.genesis_config.l1_batch_commit_data_generator_mode == L1BatchCommitmentMode::Rollup
+        {
+            return Ok(PubdataType::Rollup);
+        }
+
+        match self.configs.da_client_config.clone() {
+            None => Err(anyhow::anyhow!("No config for DA client")),
+            Some(da_client_config) => Ok(match da_client_config {
+                DAClientConfig::Avail(_) => PubdataType::Avail,
+                DAClientConfig::Celestia(_) => PubdataType::Celestia,
+                DAClientConfig::Eigen(_) => PubdataType::Eigen,
+                DAClientConfig::ObjectStore(_) => PubdataType::ObjectStore,
+                DAClientConfig::NoDA => PubdataType::NoDA,
+            }),
+        }
     }
 
     fn add_sigint_handler_layer(mut self) -> anyhow::Result<Self> {
@@ -136,8 +161,8 @@ impl MainNodeBuilder {
         Ok(self)
     }
 
-    fn add_postgres_metrics_layer(mut self) -> anyhow::Result<Self> {
-        self.node.add_layer(PostgresMetricsLayer);
+    fn add_postgres_layer(mut self) -> anyhow::Result<Self> {
+        self.node.add_layer(PostgresLayer);
         Ok(self)
     }
 
@@ -145,26 +170,10 @@ impl MainNodeBuilder {
         let eth_config = try_load_config!(self.configs.eth);
         let wallets = try_load_config!(self.wallets.eth_sender);
 
-        let eth_sender = self
-            .configs
-            .eth
-            .clone()
-            .context("eth_config")?
-            .sender
-            .context("sender")?;
-
-        let signing_mode = eth_sender.signing_mode.clone();
-        tracing::info!("Using signing mode: {:?}", signing_mode);
-
-        let client_type = match signing_mode {
-            SigningMode::GcloudKms => SigningEthClientType::GKMSSigningEthClient,
-            SigningMode::PrivateKey => SigningEthClientType::PKSigningEthClient,
-        };
-
         self.node.add_layer(PKSigningEthClientLayer::new(
             eth_config,
             self.contracts_config.clone(),
-            self.genesis_config.settlement_layer_id(),
+            self.gateway_chain_config.clone(),
             wallets,
             client_type,
         ));
@@ -175,13 +184,12 @@ impl MainNodeBuilder {
         let genesis = self.genesis_config.clone();
         let eth_config = try_load_config!(self.secrets.l1);
         let query_eth_client_layer = QueryEthClientLayer::new(
-            genesis.settlement_layer_id(),
+            genesis.l1_chain_id,
             eth_config.l1_rpc_url,
-            self.configs
-                .eth
+            self.gateway_chain_config
                 .as_ref()
-                .and_then(|x| Some(x.gas_adjuster?.settlement_mode))
-                .unwrap_or(SettlementMode::SettlesToL1),
+                .map(|c| c.gateway_chain_id),
+            eth_config.gateway_rpc_url,
         );
         self.node.add_layer(query_eth_client_layer);
         Ok(self)
@@ -256,9 +264,7 @@ impl MainNodeBuilder {
         let wallets = self.wallets.clone();
         let sk_config = try_load_config!(self.configs.state_keeper_config);
         let persistence_layer = OutputHandlerLayer::new(
-            self.contracts_config
-                .l2_shared_bridge_addr
-                .context("L2 shared bridge address")?,
+            self.contracts_config.l2_legacy_shared_bridge_addr,
             sk_config.l2_block_seal_queue_capacity,
         )
         .with_protective_reads_persistence_enabled(sk_config.protective_reads_persistence_enabled);
@@ -267,6 +273,8 @@ impl MainNodeBuilder {
             sk_config.clone(),
             try_load_config!(self.configs.mempool_config),
             try_load_config!(wallets.state_keeper),
+            self.contracts_config.l2_da_validator_addr,
+            self.get_pubdata_type()?,
         );
         let db_config = try_load_config!(self.configs.db_config);
         let experimental_vm_config = self
@@ -299,6 +307,13 @@ impl MainNodeBuilder {
         self.node.add_layer(EthWatchLayer::new(
             try_load_config!(eth_config.watcher),
             self.contracts_config.clone(),
+            self.gateway_chain_config.clone(),
+            self.configs
+                .eth
+                .as_ref()
+                .and_then(|x| Some(x.gas_adjuster?.settlement_mode))
+                .unwrap_or(SettlementMode::SettlesToL1),
+            self.genesis_config.l2_chain_id,
         ));
         Ok(self)
     }
@@ -321,12 +336,31 @@ impl MainNodeBuilder {
     fn add_tx_sender_layer(mut self, deny_list_enabled: bool) -> anyhow::Result<Self> {
         let sk_config = try_load_config!(self.configs.state_keeper_config);
         let rpc_config = try_load_config!(self.configs.api_config).web3_json_rpc;
+
+        let timestamp_asserter_params = match self.contracts_config.l2_timestamp_asserter_addr {
+            Some(address) => {
+                let timestamp_asserter_config =
+                    try_load_config!(self.configs.timestamp_asserter_config);
+                Some(TimestampAsserterParams {
+                    address,
+                    min_time_till_end: Duration::from_secs(
+                        timestamp_asserter_config.min_time_till_end_sec.into(),
+                    ),
+                })
+            }
+            None => None,
+        };
         let postgres_storage_caches_config = PostgresStorageCachesConfig {
             factory_deps_cache_size: rpc_config.factory_deps_cache_size() as u64,
             initial_writes_cache_size: rpc_config.initial_writes_cache_size() as u64,
             latest_values_cache_size: rpc_config.latest_values_cache_size() as u64,
             latest_values_max_block_lag: rpc_config.latest_values_max_block_lag(),
         };
+        let vm_config = self
+            .configs
+            .experimental_vm_config
+            .clone()
+            .unwrap_or_default();
 
         let tx_sink_config = try_load_config!(self.configs.tx_sink_config);
         if deny_list_enabled && tx_sink_config.deny_list().is_some() {
@@ -339,7 +373,7 @@ impl MainNodeBuilder {
             self.node.add_layer(MasterPoolSinkLayer);
         }
 
-        self.node.add_layer(TxSenderLayer::new(
+        let layer = TxSenderLayer::new(
             TxSenderConfig::new(
                 &sk_config,
                 &rpc_config,
@@ -347,10 +381,13 @@ impl MainNodeBuilder {
                     .fee_account
                     .address(),
                 self.genesis_config.l2_chain_id,
+                timestamp_asserter_params,
             ),
             postgres_storage_caches_config,
             rpc_config.vm_concurrency_limit(),
-        ));
+        );
+        let layer = layer.with_vm_mode(vm_config.api_fast_vm_mode);
+        self.node.add_layer(layer);
         Ok(self)
     }
 
@@ -458,10 +495,10 @@ impl MainNodeBuilder {
 
     fn add_eth_tx_aggregator_layer(mut self) -> anyhow::Result<Self> {
         let eth_sender_config = try_load_config!(self.configs.eth);
-
         self.node.add_layer(EthTxAggregatorLayer::new(
             eth_sender_config,
             self.contracts_config.clone(),
+            self.gateway_chain_config.clone(),
             self.genesis_config.l2_chain_id,
             self.genesis_config.l1_batch_commit_data_generator_mode,
             self.configs
@@ -523,23 +560,43 @@ impl MainNodeBuilder {
     }
 
     fn add_da_client_layer(mut self) -> anyhow::Result<Self> {
+        let eth_sender_config = try_load_config!(self.configs.eth);
+        if let Some(sender_config) = eth_sender_config.sender {
+            if sender_config.pubdata_sending_mode != PubdataSendingMode::Custom {
+                tracing::warn!("DA dispatcher is enabled, but the pubdata sending mode is not `Custom`. DA client will not be started.");
+                return Ok(self);
+            }
+        }
+
         let Some(da_client_config) = self.configs.da_client_config.clone() else {
-            tracing::warn!("No config for DA client, using the NoDA client");
-            self.node.add_layer(NoDAClientWiringLayer);
-            return Ok(self);
+            bail!("No config for DA client");
         };
 
-        let secrets = try_load_config!(self.secrets.data_availability);
+        if let DAClientConfig::NoDA = da_client_config {
+            self.node.add_layer(NoDAClientWiringLayer);
+            return Ok(self);
+        }
 
+        let secrets = try_load_config!(self.secrets.data_availability);
         match (da_client_config, secrets) {
             (DAClientConfig::Avail(config), DataAvailabilitySecrets::Avail(secret)) => {
                 self.node.add_layer(AvailWiringLayer::new(config, secret));
+            }
+
+            (DAClientConfig::Celestia(config), DataAvailabilitySecrets::Celestia(secret)) => {
+                self.node
+                    .add_layer(CelestiaWiringLayer::new(config, secret));
+            }
+
+            (DAClientConfig::Eigen(config), DataAvailabilitySecrets::Eigen(secret)) => {
+                self.node.add_layer(EigenWiringLayer::new(config, secret));
             }
 
             (DAClientConfig::ObjectStore(config), _) => {
                 self.node
                     .add_layer(ObjectStorageClientWiringLayer::new(config));
             }
+            _ => bail!("invalid pair of da_client and da_secrets"),
         }
 
         Ok(self)
@@ -594,7 +651,11 @@ impl MainNodeBuilder {
     }
 
     fn add_vm_playground_layer(mut self) -> anyhow::Result<Self> {
-        let vm_config = try_load_config!(self.configs.experimental_vm_config);
+        let vm_config = self
+            .configs
+            .experimental_vm_config
+            .clone()
+            .unwrap_or_default();
         self.node.add_layer(VmPlaygroundLayer::new(
             vm_config.playground,
             self.genesis_config.l2_chain_id,
@@ -751,9 +812,7 @@ impl MainNodeBuilder {
                     self = self.add_eth_tx_manager_layer()?;
                 }
                 Component::Housekeeper => {
-                    self = self
-                        .add_house_keeper_layer()?
-                        .add_postgres_metrics_layer()?;
+                    self = self.add_house_keeper_layer()?.add_postgres_layer()?;
                 }
                 Component::ProofDataHandler => {
                     self = self.add_proof_data_handler_layer()?;

@@ -158,7 +158,7 @@ impl<'a> Connection<'a> {
         &mut self,
         ctx: &ctx::Ctx,
         cert: &attester::BatchQC,
-    ) -> Result<(), super::InsertCertificateError> {
+    ) -> ctx::Result<()> {
         Ok(ctx
             .wait(self.0.consensus_dal().insert_batch_certificate(cert))
             .await??)
@@ -277,7 +277,6 @@ impl<'a> Connection<'a> {
                 first_block: txn.next_block(ctx).await.context("next_block()")?,
                 protocol_version: spec.protocol_version,
                 validators: spec.validators.clone(),
-                attesters: spec.attesters.clone(),
                 leader_selection: spec.leader_selection.clone(),
             }
             .with_hash(),

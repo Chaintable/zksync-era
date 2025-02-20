@@ -8,10 +8,11 @@ use google_cloud_kms::{
 };
 use hex;
 use tracing::{self};
-use zksync_basic_types::{Address, H256, U256,web3::{keccak256, Signature}};
-use zksync_crypto_primitives::{
-    EIP712TypedStructure, Eip712Domain, PackedEthSignature,
+use zksync_basic_types::{
+    web3::{keccak256, Signature},
+    Address, H256, U256,
 };
+use zksync_crypto_primitives::{EIP712TypedStructure, Eip712Domain, PackedEthSignature};
 
 use crate::{
     raw_ethereum_tx::{Transaction, TransactionParameters},
