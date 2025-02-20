@@ -8,8 +8,9 @@ use zksync_types::{commitment::PubdataParams, l2::L2Tx, Transaction};
 use crate::{
     storage::{ReadStorage, StorageView},
     tracer::{ValidationError, ValidationParams, ValidationTraces},
-    BatchTransactionExecutionResult, FinishedL1Batch, L1BatchEnv, L2BlockEnv, OneshotEnv,
+    BatchTransactionExecutionResult, Call, FinishedL1Batch, L1BatchEnv, L2BlockEnv, OneshotEnv,
     OneshotTracingParams, OneshotTransactionExecutionResult, SystemEnv, TxExecutionArgs,
+    VmExecutionResultAndLogs,
 };
 
 /// Factory of [`BatchExecutor`]s.
@@ -63,6 +64,7 @@ pub trait OneshotExecutor<S: ReadStorage> {
         storage: S,
         env: OneshotEnv,
         args: Vec<TxExecutionArgs>,
+        tracing_params: OneshotTracingParams,
     ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>>;
 }
 

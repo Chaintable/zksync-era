@@ -122,7 +122,8 @@ where
         _: S,
         _: OneshotEnv,
         _: Vec<TxExecutionArgs>,
-    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>>{
+        _: OneshotTracingParams,
+    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
         unimplemented!()
     }
 }

@@ -1,15 +1,24 @@
 use anyhow::Context as _;
 use zksync_dal::{CoreDal, DalError};
-use zksync_multivm::interface::{Call, CallType, ExecutionResult, OneshotTracingParams, TxExecutionArgs};
+use zksync_multivm::interface::{
+    Call, CallType, ExecutionResult, OneshotTracingParams, TxExecutionArgs,
+};
 use zksync_system_constants::MAX_ENCODED_TX_SIZE;
-use zksync_types::{api::{
-    flat_call, BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, DebugCall, DebugCallType, Log,
-    ResultDebugCall, SupportedTracers, TracerConfig, OpenEthActionTrace, PreError, PreResult, TransactionReceipt,
-}, debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat}, l2::L2Tx, transaction_request::CallRequest, web3, H256, U256, U64};
+use zksync_types::{
+    api::{
+        flat_call, BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, DebugCall,
+        DebugCallType, Log, OpenEthActionTrace, PreError, PreResult, ResultDebugCall,
+        SupportedTracers, TracerConfig, TransactionReceipt,
+    },
+    debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat},
+    l2::L2Tx,
+    transaction_request::CallRequest,
+    web3, H256, U256, U64,
+};
 use zksync_web3_decl::error::Web3Error;
 
 use crate::{
-    execution_sandbox::{SandboxAction},
+    execution_sandbox::SandboxAction,
     web3::{backend_jsonrpsee::MethodTracer, state::RpcState},
 };
 
@@ -257,7 +266,11 @@ impl DebugNamespace {
         }
         let (call, call_meta) = call_trace.unwrap();
         let tx = tx.unwrap();
-        let CallTracerResult::CallTrace(call_trace) = Self::map_call(call, call_meta, TracerConfig::default()) else { todo!() };
+        let CallTracerResult::CallTrace(call_trace) =
+            Self::map_call(call, call_meta, TracerConfig::default())
+        else {
+            todo!()
+        };
         let call_trace_flat = flat_call(
             call_trace,
             tx.transaction_index.unwrap().as_usize(),
@@ -428,13 +441,7 @@ impl DebugNamespace {
             tracing_params: OneshotTracingParams::default(),
         };
         let result = executor
-            .execute_in_sandbox(
-                vm_permit,
-                connection,
-                action,
-                &block_args,
-                None,
-            )
+            .execute_in_sandbox(vm_permit, connection, action, &block_args, None)
             .await?;
         let mut logs = vec![];
         let mut transaction_log_index: u32 = 0;
@@ -442,7 +449,7 @@ impl DebugNamespace {
         let transaction_hash = H256::random();
         for log in result.vm.logs.events {
             logs.push(Log {
-                l1_batch_number: Some(log.location.0.0.into()),
+                l1_batch_number: Some(log.location.0 .0.into()),
                 address: log.address,
                 topics: log.indexed_topics,
                 data: log.value.into(),
@@ -473,7 +480,6 @@ impl DebugNamespace {
             logs,
             logs_bloom: Default::default(),
             status: 1.into(),
-            root: Default::default(),
             effective_gas_price: Some(0.into()),
             l1_batch_tx_index: Default::default(),
             l1_batch_number: Default::default(),
@@ -607,7 +613,7 @@ impl DebugNamespace {
             let transaction_hash = H256::random();
             for log in result.logs.events {
                 logs.push(Log {
-                    l1_batch_number: Some(log.location.0.0.into()),
+                    l1_batch_number: Some(log.location.0 .0.into()),
                     address: log.address,
                     topics: log.indexed_topics,
                     data: log.value.into(),
@@ -637,8 +643,13 @@ impl DebugNamespace {
                 tx_hash: transaction_hash,
                 block_number: block_args.resolved_block_number().0,
                 block_hash: block_hash.unwrap_or_default(),
+                internal_error: None,
             };
-            let CallTracerResult::CallTrace(call_trace) = Self::map_call(call, call_meta, TracerConfig::default()) else { todo!() };
+            let CallTracerResult::CallTrace(call_trace) =
+                Self::map_call(call, call_meta, TracerConfig::default())
+            else {
+                todo!()
+            };
             let res = flat_call(
                 call_trace,
                 tx_index,

@@ -49,7 +49,6 @@ use crate::execution_sandbox::{
 
 pub mod deny_list_pool_sink;
 mod gas_estimation;
-pub mod deny_list_pool_sink;
 pub mod master_pool_sink;
 pub mod proxy;
 mod result;
@@ -691,7 +690,7 @@ impl TxSender {
         };
 
         let action = SandboxAction::Call {
-            call:tx,
+            call: tx,
             fee_input,
             enforced_base_fee: call_overrides.enforced_base_fee,
             tracing_params: OneshotTracingParams::default(),
@@ -699,13 +698,7 @@ impl TxSender {
         let result = self
             .0
             .executor
-            .execute_in_sandbox(
-                vm_permit,
-                connection,
-                action,
-                &block_args,
-                state_override,
-            )
+            .execute_in_sandbox(vm_permit, connection, action, &block_args, state_override)
             .await?;
         Ok(result.vm)
     }
