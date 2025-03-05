@@ -4,6 +4,7 @@ use serde::{de, ser::SerializeStruct, Deserialize, Deserializer, Serialize, Seri
 use serde_json::Value;
 use serde_with::{hex::Hex, serde_as};
 use zksync_basic_types::{
+    commitment::PubdataType,
     web3::{AccessList, Bytes, Index},
     Bloom, L1BatchNumber, SLChainId, H160, H256, H64, U256, U64,
 };
@@ -967,6 +968,18 @@ pub struct FeeHistory {
     #[serde(default)]
     pub l2_pubdata_price: Vec<U256>,
 }
+
+/// The data availability details type. Used exclusively in Validiums.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataAvailabilityDetails {
+    pub pubdata_type: Option<PubdataType>,
+    pub blob_id: String,
+    pub inclusion_data: Option<Vec<u8>>,
+    pub sent_at: DateTime<Utc>,
+    pub l2_da_validator: Option<Address>,
+}
+
 /// OpenEthereum-style's Call type.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
