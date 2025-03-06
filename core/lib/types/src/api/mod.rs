@@ -659,6 +659,7 @@ pub struct ResultDebugCall {
 pub enum DebugCallType {
     #[default]
     Call,
+    DelegateCall,
     Create,
 }
 
@@ -1151,14 +1152,18 @@ pub fn flat_call(
     let mut res = Vec::new();
     set_zero(&mut call);
     match call.r#type {
-        DebugCallType::Call => {
+        DebugCallType::Call | DebugCallType::DelegateCall => {
             let eth_call = OpenEthCall {
                 from: call.from,
                 to: call.to,
                 value: call.value,
                 gas: call.gas.into(),
                 input: call.input.into(),
-                call_type: OpenEthCallType::Call,
+                call_type: if call.r#type == DebugCallType::Call {
+                    OpenEthCallType::Call
+                }else {
+                    OpenEthCallType::DelegateCall
+                },
             };
             let call_res = match call.error {
                 None => OpenEthRes::Call(OpenEthCallResult {

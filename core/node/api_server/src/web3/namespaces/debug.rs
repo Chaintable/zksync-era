@@ -5,7 +5,7 @@ use zksync_system_constants::MAX_ENCODED_TX_SIZE;
 use zksync_types::{api::{
     flat_call, BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, DebugCall, DebugCallType, Log,
     ResultDebugCall, SupportedTracers, TracerConfig, OpenEthActionTrace, PreError, PreResult, TransactionReceipt,
-}, debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat}, l2::L2Tx, transaction_request::CallRequest, web3, H256, U256, U64};
+}, debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat}, l2::L2Tx, transaction_request::CallRequest, web3, zk_evm_types::FarCallOpcode, H256, U256, U64};
 use zksync_web3_decl::error::Web3Error;
 
 use crate::{
@@ -64,7 +64,9 @@ impl DebugNamespace {
                 .collect()
         };
         let debug_type = match call.r#type {
-            CallType::Call(_) => DebugCallType::Call,
+            CallType::Call(FarCallOpcode::Normal) => DebugCallType::Call,
+            CallType::Call(FarCallOpcode::Mimic) => DebugCallType::Call,
+            CallType::Call(FarCallOpcode::Delegate) => DebugCallType::DelegateCall,
             CallType::Create => DebugCallType::Create,
             CallType::NearCall => unreachable!("We have to filter our near calls before"),
         };
@@ -92,7 +94,9 @@ impl DebugNamespace {
     ) {
         let subtraces = call.calls.len();
         let debug_type = match call.r#type {
-            CallType::Call(_) => DebugCallType::Call,
+            CallType::Call(FarCallOpcode::Normal) => DebugCallType::Call,
+            CallType::Call(FarCallOpcode::Mimic) => DebugCallType::Call,
+            CallType::Call(FarCallOpcode::Delegate) => DebugCallType::DelegateCall,
             CallType::Create => DebugCallType::Create,
             CallType::NearCall => unreachable!("We have to filter our near calls before"),
         };
