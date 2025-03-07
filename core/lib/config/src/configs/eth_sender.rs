@@ -11,7 +11,7 @@ use crate::EthWatchConfig;
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct EthConfig {
     /// Options related to the Ethereum sender directly.
-    sender: Option<SenderConfig>,
+    pub sender: Option<SenderConfig>,
     /// Options related to the `GasAdjuster` submodule.
     pub gas_adjuster: Option<GasAdjusterConfig>,
     pub watcher: Option<EthWatchConfig>,
@@ -56,6 +56,7 @@ impl EthConfig {
                 is_verifier_pre_fflonk: true,
                 gas_limit_mode: GasLimitMode::Maximum,
                 max_acceptable_base_fee_in_wei: 100000000000,
+                signing_mode: SigningMode::PrivateKey,
             }),
             gas_adjuster: Some(GasAdjusterConfig {
                 default_priority_fee_per_gas: 1000000000,
@@ -105,6 +106,13 @@ pub enum GasLimitMode {
     Calculated,
 }
 
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Default)]
+pub enum SigningMode {
+    #[default]
+    PrivateKey,
+    GcloudKms,
+}
+
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct SenderConfig {
     /// Amount of confirmations required to consider L1 transaction committed.
@@ -152,6 +160,8 @@ pub struct SenderConfig {
     /// Max acceptable base fee the sender is allowed to use to send L1 txs.
     #[serde(default = "SenderConfig::default_max_acceptable_base_fee_in_wei")]
     pub max_acceptable_base_fee_in_wei: u64,
+    /// Type of signing client for Ethereum transactions.
+    pub signing_mode: SigningMode,
 }
 
 impl SenderConfig {

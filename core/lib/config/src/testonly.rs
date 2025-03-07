@@ -21,6 +21,7 @@ use crate::{
             avail::{AvailClientConfig, AvailDefaultConfig},
             DAClientConfig::Avail,
         },
+        eth_sender::SigningMode,
         external_price_api_client::ForcedPriceClientConfig,
     },
     AvailConfig,
@@ -403,6 +404,7 @@ impl Distribution<configs::eth_sender::SenderConfig> for EncodeDist {
             is_verifier_pre_fflonk: self.sample(rng),
             gas_limit_mode: self.sample(rng),
             max_acceptable_base_fee_in_wei: self.sample(rng),
+            signing_mode: SigningMode::PrivateKey,
         }
     }
 }

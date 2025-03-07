@@ -33,6 +33,11 @@ enum PubdataSendingMode {
 }
 
 
+enum SigningMode {
+  PRIVATE_KEY = 0;
+  GCLOUD_KMS = 1;
+}
+
 message Sender {
   reserved 1; reserved "aggregated_proof_sizes";
   optional uint64 wait_confirmations = 2; // optional
@@ -59,6 +64,7 @@ message Sender {
   optional bool is_verifier_pre_fflonk = 24; // optional
   optional GasLimitMode gas_limit_mode = 25; // optional
   optional uint64 max_acceptable_base_fee_in_wei = 26; // optional; wei
+  optional SigningMode signing_mode = 99; // required
 }
 
 message GasAdjuster {
