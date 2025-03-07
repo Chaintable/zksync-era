@@ -37,6 +37,7 @@ mod tee_proof_data_handler;
 #[cfg(test)]
 mod tests;
 mod timestamp_asserter;
+mod tx_sink;
 mod utils;
 mod vm_runner;
 mod wallets;

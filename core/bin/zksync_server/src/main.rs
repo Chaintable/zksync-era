@@ -10,6 +10,7 @@ use zksync_config::{
             TimestampAsserterConfig,
         },
         house_keeper::HouseKeeperConfig,
+        tx_sink::TxSinkConfig,
         BasicWitnessInputProducerConfig, ContractVerifierSecrets, DataAvailabilitySecrets,
         DatabaseSecrets, ExperimentalVmConfig, ExternalPriceApiClientConfig,
         FriProofCompressorConfig, FriProverConfig, FriProverGatewayConfig,
@@ -43,7 +44,7 @@ struct Cli {
     /// Comma-separated list of components to launch.
     #[arg(
         long,
-        default_value = "api,tree,eth,state_keeper,housekeeper,commitment_generator,da_dispatcher,vm_runner_protective_reads"
+        default_value = "api,tree,eth,state_keeper,housekeeper,commitment_generator,da_dispatcher,vm_runner_protective_reads,deny_list"
     )]
     components: ComponentsToRun,
     /// Path to the yaml config. If set, it will be used instead of env vars.
@@ -218,5 +219,6 @@ fn load_env_config() -> anyhow::Result<TempConfigStore> {
         experimental_vm_config: ExperimentalVmConfig::from_env().ok(),
         prover_job_monitor_config: None,
         timestamp_asserter_config: TimestampAsserterConfig::from_env().ok(),
+        tx_sink_config: TxSinkConfig::from_env().ok(),
     })
 }
