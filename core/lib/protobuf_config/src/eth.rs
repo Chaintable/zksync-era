@@ -63,24 +63,6 @@ impl proto::PubdataSendingMode {
     }
 }
 
-impl proto::SigningMode {
-    fn new(x: &configs::eth_sender::SigningMode) -> Self {
-        use configs::eth_sender::SigningMode as From;
-        match x {
-            From::PrivateKey => Self::PrivateKey,
-            From::GcloudKms => Self::GcloudKms,
-        }
-    }
-
-    fn parse(&self) -> configs::eth_sender::SigningMode {
-        use configs::eth_sender::SigningMode as To;
-        match self {
-            Self::PrivateKey => To::PrivateKey,
-            Self::GcloudKms => To::GcloudKms,
-        }
-    }
-}
-
 impl ProtoRepr for proto::Eth {
     type Type = configs::eth_sender::EthConfig;
 
@@ -159,10 +141,6 @@ impl ProtoRepr for proto::Sender {
             max_acceptable_base_fee_in_wei: self
                 .max_acceptable_base_fee_in_wei
                 .unwrap_or(Self::Type::default_max_acceptable_base_fee_in_wei()),
-            signing_mode: required(&self.signing_mode)
-                .and_then(|x| Ok(proto::SigningMode::try_from(*x)?))
-                .context("signing_mode")?
-                .parse(),
         })
     }
 
@@ -194,7 +172,6 @@ impl ProtoRepr for proto::Sender {
             is_verifier_pre_fflonk: Some(this.is_verifier_pre_fflonk),
             gas_limit_mode: Some(proto::GasLimitMode::new(&this.gas_limit_mode).into()),
             max_acceptable_base_fee_in_wei: Some(this.max_acceptable_base_fee_in_wei),
-            signing_mode: Some(proto::SigningMode::new(&this.signing_mode).into()),
         }
     }
 }
