@@ -45,7 +45,7 @@ impl FromEnv for GasAdjusterConfig {
 #[cfg(test)]
 mod tests {
     use zksync_basic_types::pubdata_da::PubdataSendingMode;
-    use zksync_config::configs::eth_sender::ProofSendingMode;
+    use zksync_config::configs::eth_sender::{ProofSendingMode, SigningMode};
 
     use super::*;
     use crate::test_utils::{hash, EnvMutex};
