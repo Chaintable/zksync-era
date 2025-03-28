@@ -2,8 +2,8 @@
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 use zksync_types::{
-    api::{BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, TracerConfig},
-    transaction_request::CallRequest,
+    api::{BlockId, BlockNumber, PreResult, TransactionReceipt, CallTracerBlockResult, CallTracerResult, TracerConfig},
+    transaction_request::{CallRequest},
 };
 
 use crate::{
@@ -48,4 +48,17 @@ pub trait DebugNamespace {
         tx_hash: H256,
         options: Option<TracerConfig>,
     ) -> RpcResult<Option<CallTracerResult>>;
+
+    #[method(name = "getLog")]
+    async fn trace_get_log(
+        &self,
+        request: CallRequest,
+        block: Option<BlockId>,
+    ) -> RpcResult<TransactionReceipt>;
+    #[method(name = "traceMany")]
+    async fn debug_trace_many(
+        &self,
+        requests: Vec<CallRequest>,
+        block: Option<BlockId>,
+    ) -> RpcResult<Vec<PreResult>>;
 }

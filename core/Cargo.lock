@@ -12451,6 +12451,7 @@ dependencies = [
  "async-trait",
  "axum 0.7.9",
  "chrono",
+ "ethabi",
  "futures 0.3.31",
  "governor",
  "hex",
@@ -12460,6 +12461,7 @@ dependencies = [
  "once_cell",
  "pin-project-lite",
  "rand 0.8.5",
+ "rustc-hex",
  "serde",
  "serde_json",
  "strum",
@@ -13266,6 +13268,7 @@ dependencies = [
  "zksync_dal",
  "zksync_multivm",
  "zksync_types",
+ "zksync_vm_interface",
 ]
 
 [[package]]
