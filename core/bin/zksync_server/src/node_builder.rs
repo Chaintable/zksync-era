@@ -427,7 +427,16 @@ impl MainNodeBuilder {
         };
         self.node.add_layer(Web3ServerLayer::http(
             rpc_config.http_port,
-            InternalApiConfig::new(&rpc_config, &self.contracts_config, &self.genesis_config),
+            InternalApiConfig::new(
+                &rpc_config,
+                &self.contracts_config,
+                &self.genesis_config,
+                self.configs
+                    .mempool_config
+                    .as_ref()
+                    .map(|x| x.l1_to_l2_txs_paused)
+                    .unwrap_or_default(),
+            ),
             optional_config,
         ));
 
@@ -468,7 +477,16 @@ impl MainNodeBuilder {
         };
         self.node.add_layer(Web3ServerLayer::ws(
             rpc_config.ws_port,
-            InternalApiConfig::new(&rpc_config, &self.contracts_config, &self.genesis_config),
+            InternalApiConfig::new(
+                &rpc_config,
+                &self.contracts_config,
+                &self.genesis_config,
+                self.configs
+                    .mempool_config
+                    .as_ref()
+                    .map(|x| x.l1_to_l2_txs_paused)
+                    .unwrap_or_default(),
+            ),
             optional_config,
         ));
 
@@ -570,28 +588,28 @@ impl MainNodeBuilder {
             return Ok(self);
         }
 
-        let secrets = try_load_config!(self.secrets.data_availability);
-        let l1_secrets = try_load_config!(self.secrets.l1);
-        match (da_client_config, secrets) {
+        if let DAClientConfig::ObjectStore(config) = da_client_config {
+            self.node
+                .add_layer(ObjectStorageClientWiringLayer::new(config));
+            return Ok(self);
+        }
+
+        let da_client_secrets = try_load_config!(self.secrets.data_availability);
+        match (da_client_config, da_client_secrets) {
             (DAClientConfig::Avail(config), DataAvailabilitySecrets::Avail(secret)) => {
                 self.node.add_layer(AvailWiringLayer::new(config, secret));
             }
-
             (DAClientConfig::Celestia(config), DataAvailabilitySecrets::Celestia(secret)) => {
                 self.node
                     .add_layer(CelestiaWiringLayer::new(config, secret));
             }
-
             (DAClientConfig::Eigen(mut config), DataAvailabilitySecrets::Eigen(secret)) => {
                 if config.eigenda_eth_rpc.is_none() {
+                    let l1_secrets = try_load_config!(self.secrets.l1);
                     config.eigenda_eth_rpc = Some(l1_secrets.l1_rpc_url);
                 }
-                self.node.add_layer(EigenWiringLayer::new(config, secret));
-            }
 
-            (DAClientConfig::ObjectStore(config), _) => {
-                self.node
-                    .add_layer(ObjectStorageClientWiringLayer::new(config));
+                self.node.add_layer(EigenWiringLayer::new(config, secret));
             }
             _ => bail!("invalid pair of da_client and da_secrets"),
         }

@@ -834,6 +834,7 @@ impl CallTracerBlockResult {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum CallTracerResult {
@@ -979,6 +980,13 @@ pub struct DataAvailabilityDetails {
     pub inclusion_data: Option<Vec<u8>>,
     pub sent_at: DateTime<Utc>,
     pub l2_da_validator: Option<Address>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct L1ToL2TxsStatus {
+    pub l1_to_l2_txs_in_mempool: usize,
+    pub l1_to_l2_txs_paused: bool,
 }
 
 /// OpenEthereum-style's Call type.

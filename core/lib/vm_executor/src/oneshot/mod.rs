@@ -141,7 +141,9 @@ where
         let fast_vm_mode = self.select_fast_vm_mode(&env, &tracing_params);
         let panic_on_divergence = self.panic_on_divergence;
         let execution_latency_histogram = self.execution_latency_histogram;
+        let current_span = tracing::Span::current();
         tokio::task::spawn_blocking(move || {
+            let _entered_span = current_span.entered();
             let storage_view = StorageView::new(storage).to_rc_ptr();
             let sandbox = VmSandbox {
                 fast_vm_mode: fast_vm_mode.clone(),
@@ -160,8 +162,8 @@ where
                 )
             })
         })
-            .await
-            .context("VM execution panicked")
+         .await
+         .context("VM execution panicked")
     }
 
     async fn inspect_transactions_with_bytecode_compression(
@@ -207,8 +209,8 @@ where
             }
             results
         })
-            .await
-            .context("VM execution panicked")
+        .await
+        .context("VM execution panicked")
     }
 }
 
@@ -234,8 +236,9 @@ where
         let panic_on_divergence = self.panic_on_divergence.clone();
         let execution_latency_histogram = self.execution_latency_histogram.clone();
         let fast_vm_mode = self.fast_vm_mode.clone();
-
+        let current_span = tracing::Span::current();
         tokio::task::spawn_blocking(move || {
+            let _entered_span = current_span.entered();
             let storage_view = StorageView::new(storage).to_rc_ptr();
             let sandbox = VmSandbox {
                 fast_vm_mode: if !is_supported_by_fast_vm(env.system.version) {
@@ -280,8 +283,8 @@ where
                 }
             })
         })
-            .await
-            .context("VM execution panicked")
+        .await
+        .context("VM execution panicked")
     }
 }
 
