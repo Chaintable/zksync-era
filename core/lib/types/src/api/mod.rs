@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
+use derive_more::Display;
 use serde::{de, ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use serde_with::{hex::Hex, serde_as};
-use strum::Display;
 use zksync_basic_types::{
+    commitment::PubdataType,
     web3::{AccessList, Bytes, Index},
     Bloom, L1BatchNumber, SLChainId, H160, H256, H64, U256, U64,
 };
@@ -658,6 +659,7 @@ pub struct ResultDebugCall {
 pub enum DebugCallType {
     #[default]
     Call,
+    DelegateCall,
     Create,
 }
 
@@ -967,6 +969,25 @@ pub struct FeeHistory {
     #[serde(default)]
     pub l2_pubdata_price: Vec<U256>,
 }
+
+/// The data availability details type. Used exclusively in Validiums.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataAvailabilityDetails {
+    pub pubdata_type: Option<PubdataType>,
+    pub blob_id: String,
+    pub inclusion_data: Option<Vec<u8>>,
+    pub sent_at: DateTime<Utc>,
+    pub l2_da_validator: Option<Address>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct L1ToL2TxsStatus {
+    pub l1_to_l2_txs_in_mempool: usize,
+    pub l1_to_l2_txs_paused: bool,
+}
+
 /// OpenEthereum-style's Call type.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
@@ -1138,14 +1159,18 @@ pub fn flat_call(
     let mut res = Vec::new();
     set_zero(&mut call);
     match call.r#type {
-        DebugCallType::Call => {
+        DebugCallType::Call | DebugCallType::DelegateCall => {
             let eth_call = OpenEthCall {
                 from: call.from,
                 to: call.to,
                 value: call.value,
                 gas: call.gas.into(),
                 input: call.input.into(),
-                call_type: OpenEthCallType::Call,
+                call_type:  match call.r#type {
+                    DebugCallType::Call => OpenEthCallType::Call,
+                    DebugCallType::DelegateCall => OpenEthCallType::DelegateCall,
+                    DebugCallType::Create => unreachable!(),
+                },
             };
             let call_res = match call.error {
                 None => OpenEthRes::Call(OpenEthCallResult {
@@ -1261,5 +1286,23 @@ mod tests {
 
         serde_json::from_str::<OldProtocolVersion>(&serde_json::to_string(&new_version).unwrap())
             .unwrap();
+    }
+
+    #[test]
+    fn proper_display() {
+        let block_number = BlockNumber::Committed;
+        assert_eq!(format!("{}", block_number), "Committed");
+        let block_number = BlockNumber::Finalized;
+        assert_eq!(format!("{}", block_number), "Finalized");
+        let block_number = BlockNumber::Latest;
+        assert_eq!(format!("{}", block_number), "Latest");
+        let block_number = BlockNumber::L1Committed;
+        assert_eq!(format!("{}", block_number), "L1Committed");
+        let block_number = BlockNumber::Earliest;
+        assert_eq!(format!("{}", block_number), "Earliest");
+        let block_number = BlockNumber::Pending;
+        assert_eq!(format!("{}", block_number), "Pending");
+        let block_number = BlockNumber::Number(U64::from(42));
+        assert_eq!(format!("{}", block_number), "42");
     }
 }

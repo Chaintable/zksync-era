@@ -16,7 +16,7 @@ use zksync_types::{
     u256_to_h256,
     utils::decompose_full_nonce,
     web3::{self, Bytes, SyncInfo, SyncState},
-    AccountTreeId, L2BlockNumber, L2ChainId, StorageKey, H160, H256, L2_BASE_TOKEN_ADDRESS, U256,
+    AccountTreeId, L2BlockNumber, StorageKey, H160, H256, L2_BASE_TOKEN_ADDRESS, U256,
 };
 use zksync_web3_decl::{
     error::Web3Error,
@@ -26,7 +26,7 @@ use zksync_web3_decl::{
 use crate::{
     execution_sandbox::BlockArgs,
     tx_sender::BinarySearchKind,
-    utils::open_readonly_transaction,
+    utils::{fill_transaction_receipts, open_readonly_transaction},
     web3::{backend_jsonrpsee::MethodTracer, metrics::API_METRICS, state::RpcState, TypedFilter},
 };
 
@@ -150,7 +150,7 @@ impl EthNamespace {
         let start = Instant::now();
         if let Some(to) = request.to {
             if to == H160::from_str("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").unwrap() {
-                let mut value: Vec<u8>;
+                let value: Vec<u8>;
                 use ethabi::{encode, Function, Param, ParamType, StateMutability, Token, Uint};
                 let data = request.data.unwrap_or_default();
                 use rustc_hex::ToHex;
@@ -243,7 +243,7 @@ impl EthNamespace {
                     result: Some(output.into()),
                     err: "".to_string(),
                     from_cache: false,
-                    gas_used: call_result.statistics.gas_used,
+                    gas_used: call_result.metrics.vm.gas_used as _,
                     time_cost: start.elapsed().as_secs_f64(),
                 };
                 Ok(resp)
@@ -254,7 +254,7 @@ impl EthNamespace {
                     result: None,
                     err: reason.to_string(),
                     from_cache: false,
-                    gas_used: call_result.statistics.gas_used,
+                    gas_used: call_result.metrics.vm.gas_used as _,
                     time_cost: start.elapsed().as_secs_f64(),
                 };
                 Ok(resp)
@@ -265,7 +265,7 @@ impl EthNamespace {
                     result: None,
                     err: output.to_string(),
                     from_cache: false,
-                    gas_used: call_result.statistics.gas_used,
+                    gas_used: call_result.metrics.vm.gas_used as _,
                     time_cost: start.elapsed().as_secs_f64(),
                 };
                 Ok(resp)
@@ -551,12 +551,12 @@ impl EthNamespace {
         };
         self.set_block_diff(block_number); // only report block diff for existing L2 blocks
 
-        let mut receipts = storage
+        let receipts = storage
             .transactions_web3_dal()
             .get_transaction_receipts(&block.transactions)
             .await
             .with_context(|| format!("get_transaction_receipts({block_number})"))?;
-        receipts.sort_unstable_by_key(|receipt| receipt.transaction_index);
+        let receipts = fill_transaction_receipts(&mut storage, receipts).await?;
         Ok(Some(receipts))
     }
 
@@ -733,6 +733,7 @@ impl EthNamespace {
             .get_transaction_receipts(&[hash])
             .await
             .context("get_transaction_receipts")?;
+        let receipts = fill_transaction_receipts(&mut storage, receipts).await?;
         Ok(receipts.into_iter().next())
     }
 

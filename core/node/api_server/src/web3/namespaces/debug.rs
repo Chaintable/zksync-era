@@ -13,7 +13,9 @@ use zksync_types::{
     debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat},
     l2::L2Tx,
     transaction_request::CallRequest,
-    web3, H256, U256, U64,
+    web3,
+    zk_evm_types::FarCallOpcode,
+    H256, U256, U64,
 };
 use zksync_web3_decl::error::Web3Error;
 
@@ -73,7 +75,9 @@ impl DebugNamespace {
                 .collect()
         };
         let debug_type = match call.r#type {
-            CallType::Call(_) => DebugCallType::Call,
+            CallType::Call(FarCallOpcode::Normal) => DebugCallType::Call,
+            CallType::Call(FarCallOpcode::Mimic) => DebugCallType::Call,
+            CallType::Call(FarCallOpcode::Delegate) => DebugCallType::DelegateCall,
             CallType::Create => DebugCallType::Create,
             CallType::NearCall => unreachable!("We have to filter our near calls before"),
         };
@@ -101,7 +105,9 @@ impl DebugNamespace {
     ) {
         let subtraces = call.calls.len();
         let debug_type = match call.r#type {
-            CallType::Call(_) => DebugCallType::Call,
+            CallType::Call(FarCallOpcode::Normal) => DebugCallType::Call,
+            CallType::Call(FarCallOpcode::Mimic) => DebugCallType::Call,
+            CallType::Call(FarCallOpcode::Delegate) => DebugCallType::DelegateCall,
             CallType::Create => DebugCallType::Create,
             CallType::NearCall => unreachable!("We have to filter our near calls before"),
         };
@@ -177,6 +183,11 @@ impl DebugNamespace {
         }
 
         let mut connection = self.state.acquire_connection().await?;
+        self.state
+            .start_info
+            .ensure_not_pruned(block_id, &mut connection)
+            .await?;
+
         let block_number = self.state.resolve_block(&mut connection, block_id).await?;
         // let block_hash = block_hash self.state.
         self.current_method()
@@ -294,6 +305,11 @@ impl DebugNamespace {
         let options = options.unwrap_or_default();
 
         let mut connection = self.state.acquire_connection().await?;
+        self.state
+            .start_info
+            .ensure_not_pruned(block_id, &mut connection)
+            .await?;
+
         let block_args = self
             .state
             .resolve_block_args(&mut connection, block_id)
@@ -355,7 +371,7 @@ impl DebugNamespace {
             )
             .await?;
 
-        let (output, revert_reason) = match result.vm.result {
+        let (output, revert_reason) = match result.result {
             ExecutionResult::Success { output, .. } => (output, None),
             ExecutionResult::Revert { output } => (vec![], Some(output.to_string())),
             ExecutionResult::Halt { reason } => {
@@ -367,7 +383,7 @@ impl DebugNamespace {
         };
         let call = Call::new_high_level(
             call.common_data.fee.gas_limit.as_u64(),
-            result.vm.statistics.gas_used,
+            result.metrics.vm.gas_used as u64,
             call.execute.value,
             call.execute.calldata,
             output,
@@ -447,7 +463,7 @@ impl DebugNamespace {
         let mut transaction_log_index: u32 = 0;
         let block_number = block_args.resolved.state_l2_block_number().0;
         let transaction_hash = H256::random();
-        for log in result.vm.logs.events {
+        for log in result.events {
             logs.push(Log {
                 l1_batch_number: Some(log.location.0 .0.into()),
                 address: log.address,
@@ -474,8 +490,8 @@ impl DebugNamespace {
             block_number: U64::from(block_number.clone() as u64),
             from,
             to,
-            gas_used: Some(result.vm.statistics.gas_used.into()),
-            cumulative_gas_used: result.vm.statistics.gas_used.into(),
+            gas_used: Some(result.metrics.vm.gas_used.into()),
+            cumulative_gas_used: result.metrics.vm.gas_used.into(),
             contract_address: None,
             logs,
             logs_bloom: Default::default(),
