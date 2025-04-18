@@ -65,6 +65,7 @@ use zksync_node_framework::{
     },
     service::{ZkStackService, ZkStackServiceBuilder},
 };
+use zksync_node_framework::implementations::layers::sigterm::SigtermHandlerLayer;
 use zksync_state::RocksdbStorageOptions;
 
 use crate::{config::ExternalNodeConfig, metrics::framework::ExternalNodeMetricsLayer, Component};
@@ -94,6 +95,11 @@ impl ExternalNodeBuilder {
 
     fn add_sigint_handler_layer(mut self) -> anyhow::Result<Self> {
         self.node.add_layer(SigintHandlerLayer);
+        Ok(self)
+    }
+
+    fn add_sigterm_handler_layer(mut self) -> anyhow::Result<Self> {
+        self.node.add_layer(SigtermHandlerLayer);
         Ok(self)
     }
 
@@ -633,6 +639,7 @@ impl ExternalNodeBuilder {
         // Add "base" layers
         self = self
             .add_sigint_handler_layer()?
+            .add_sigterm_handler_layer()?
             .add_healthcheck_layer()?
             .add_prometheus_exporter_layer()?
             .add_pools_layer()?

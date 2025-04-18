@@ -1,5 +1,9 @@
+use anyhow::anyhow;
 use anyhow::Context as _;
+use std::str::FromStr;
+use std::time::Instant;
 use zksync_dal::{CoreDal, DalError};
+use zksync_multivm::interface::ExecutionResult;
 use zksync_system_constants::DEFAULT_L2_TX_GAS_PER_PUBDATA_BYTE;
 use zksync_types::{
     api::{
@@ -8,11 +12,11 @@ use zksync_types::{
     },
     bytecode::{trim_padded_evm_bytecode, BytecodeHash, BytecodeMarker},
     l2::{L2Tx, TransactionType},
-    transaction_request::CallRequest,
+    transaction_request::{CallRequest, CallResult, MultiCallErrorCode, MultiCallResp},
     u256_to_h256,
     utils::decompose_full_nonce,
     web3::{self, Bytes, SyncInfo, SyncState},
-    AccountTreeId, L2BlockNumber, StorageKey, H256, L2_BASE_TOKEN_ADDRESS, U256,
+    AccountTreeId, L2BlockNumber, L2ChainId, StorageKey, H160, H256, L2_BASE_TOKEN_ADDRESS, U256,
 };
 use zksync_web3_decl::{
     error::Web3Error,
@@ -94,6 +98,185 @@ impl EthNamespace {
             .eth_call(block_args, call_overrides, tx, state_override)
             .await?;
         Ok(call_result.into())
+    }
+    pub async fn multi_call_impl(
+        &self,
+        mut requests: Vec<CallRequest>,
+        block_id: Option<BlockId>,
+        fast_fail: bool,
+        _use_parallel: bool,
+        _disable_cache: bool,
+    ) -> Result<MultiCallResp, Web3Error> {
+        let block_id = block_id.unwrap_or(BlockId::Number(BlockNumber::Pending));
+        self.current_method().set_block_id(block_id);
+        let mut connection = self.state.acquire_connection().await?;
+        let block_args = self
+            .state
+            .resolve_block_args(&mut connection, block_id)
+            .await?;
+        drop(connection);
+        let mut resp = MultiCallResp::default();
+        for request in requests.drain(..) {
+            if fast_fail {
+                if let Some(res) = resp.results.last() {
+                    if res.code != 0 {
+                        resp.results.push(res.clone());
+                        continue;
+                    }
+                }
+            }
+            let call_result = self.call_once_inner(request, block_args.clone()).await;
+            match call_result {
+                Ok(call_result) => {
+                    resp.results.push(call_result);
+                }
+                Err(err) => {
+                    resp.results.push(CallResult {
+                        code: MultiCallErrorCode::MessageExecuting as i32,
+                        result: None,
+                        err: err.to_string(),
+                        from_cache: false,
+                        gas_used: 0,
+                        time_cost: 0.0,
+                    });
+                }
+            }
+        }
+        Ok(resp)
+    }
+    async fn call_once_inner(
+        &self,
+        mut request: CallRequest,
+        block_args: BlockArgs,
+    ) -> Result<CallResult, Web3Error> {
+        let start = Instant::now();
+        if let Some(to) = request.to {
+            if to == H160::from_str("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").unwrap() {
+                let value: Vec<u8>;
+                use ethabi::{encode, Function, Param, ParamType, StateMutability, Token, Uint};
+                let data = request.data.unwrap_or_default();
+                use rustc_hex::ToHex;
+                let serialized: String = data.0.to_hex::<String>();
+                if serialized.starts_with("06") || serialized.starts_with("95") {
+                    let mut t = Token::String("ETH".to_string()); // era, zero, abstract
+                    if self.state.api_config.l2_chain_id == L2ChainId::from(50104) {
+                        // sophon chain
+                        t = Token::String("SOPH".to_string());
+                    }
+                    value = encode(&[t]);
+                } else if serialized.starts_with("31") {
+                    let t = Token::Uint(Uint::from(18u32));
+                    value = encode(&[t]);
+                } else if serialized.starts_with("18") {
+                    let t = Token::Uint(Uint::from(1000000000000000000u128));
+                    value = encode(&[t]);
+                } else {
+                    let func = Function {
+                        name: "balanceOf".to_owned(),
+                        inputs: vec![Param {
+                            name: "owner".to_owned(),
+                            kind: ParamType::Address,
+                            internal_type: None,
+                        }],
+                        constant: None,
+                        outputs: vec![Param {
+                            name: "balance".to_owned(),
+                            kind: ParamType::Uint(256),
+                            internal_type: None,
+                        }],
+                        state_mutability: StateMutability::View,
+                    };
+                    let data = hex::decode(serialized)
+                        .map_err(|err| Web3Error::InternalError(err.into()))?;
+                    let tokens = func
+                        .decode_input(data[4..].as_ref())
+                        .map_err(|err| Web3Error::InternalError(err.into()))?;
+                    if tokens.len() != 1 {
+                        return Err(Web3Error::InternalError(anyhow!(
+                            "decode_input fatal: invalid tokens"
+                        )));
+                    }
+                    let address = match tokens[0] {
+                        Token::Address(address) => address,
+                        _ => return Err(anyhow!("decode_input fatal: invalid token").into()),
+                    };
+                    let mut connection = self.state.acquire_connection().await?;
+                    let balance = connection
+                        .storage_web3_dal()
+                        .standard_token_historical_balance(
+                            AccountTreeId::new(L2_BASE_TOKEN_ADDRESS),
+                            AccountTreeId::new(address),
+                            block_args.resolved_block_number(),
+                        )
+                        .await
+                        .map_err(DalError::generalize)?;
+                    drop(connection);
+                    let t = Token::Uint(balance);
+                    value = encode(&[t]);
+                }
+                let resp = CallResult {
+                    code: 0,
+                    result: Some(value.into()),
+                    err: "".to_string(),
+                    from_cache: false,
+                    gas_used: 0,
+                    time_cost: start.elapsed().as_secs_f64(),
+                };
+                return Ok(resp);
+            }
+        }
+        self.current_method().set_block_diff(
+            self.state
+                .last_sealed_l2_block
+                .diff_with_block_args(&block_args),
+        );
+        let mut connection = self.state.acquire_connection().await?;
+        if request.gas.is_none() {
+            request.gas = Some(block_args.default_eth_call_gas(&mut connection).await?);
+        }
+        drop(connection);
+        let call_overrides = request.get_call_overrides()?;
+        let tx = L2Tx::from_request(request.into(), self.state.api_config.max_tx_size, false)?;
+        let call_result = self
+            .state
+            .tx_sender
+            .eth_call_raw(block_args, call_overrides, tx, None)
+            .await?;
+        match call_result.result {
+            ExecutionResult::Success { output } => {
+                let resp = CallResult {
+                    code: 0,
+                    result: Some(output.into()),
+                    err: "".to_string(),
+                    from_cache: false,
+                    gas_used: call_result.metrics.vm.gas_used as _,
+                    time_cost: start.elapsed().as_secs_f64(),
+                };
+                Ok(resp)
+            }
+            ExecutionResult::Halt { reason } => {
+                let resp = CallResult {
+                    code: MultiCallErrorCode::MessageExecuting as i32,
+                    result: None,
+                    err: reason.to_string(),
+                    from_cache: false,
+                    gas_used: call_result.metrics.vm.gas_used as _,
+                    time_cost: start.elapsed().as_secs_f64(),
+                };
+                Ok(resp)
+            }
+            ExecutionResult::Revert { output } => {
+                let resp = CallResult {
+                    code: MultiCallErrorCode::EVMReverted as i32,
+                    result: None,
+                    err: output.to_string(),
+                    from_cache: false,
+                    gas_used: call_result.metrics.vm.gas_used as _,
+                    time_cost: start.elapsed().as_secs_f64(),
+                };
+                Ok(resp)
+            }
+        }
     }
 
     pub async fn estimate_gas_impl(
