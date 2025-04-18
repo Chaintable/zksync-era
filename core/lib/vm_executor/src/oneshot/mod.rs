@@ -65,7 +65,7 @@ mod tests;
 #[derive(Debug)]
 pub struct MainOneshotExecutor {
     fast_vm_mode: FastVmMode,
-    panic_on_divergence: bool,
+    vm_divergence_handler: DivergenceHandler,
     missed_storage_invocation_limit: usize,
     execution_latency_histogram: Option<&'static vise::Histogram<Duration>>,
 }
@@ -76,7 +76,9 @@ impl MainOneshotExecutor {
     pub fn new(missed_storage_invocation_limit: usize) -> Self {
         Self {
             fast_vm_mode: FastVmMode::Old,
-            panic_on_divergence: false,
+            vm_divergence_handler: DivergenceHandler::new(|_, _| {
+                // Do nothing
+            }),
             missed_storage_invocation_limit,
             execution_latency_histogram: None,
         }
@@ -92,9 +94,10 @@ impl MainOneshotExecutor {
         self.fast_vm_mode = fast_vm_mode;
     }
 
-    /// Causes the VM to panic on divergence whenever it executes in the shadow mode. By default, a divergence is logged on `ERROR` level.
-    pub fn panic_on_divergence(&mut self) {
-        self.panic_on_divergence = true;
+    /// Sets the handler called when a VM divergence is detected. Regardless of the handler, the divergence error(s)
+    /// will be logged on the `ERROR` level.
+    pub fn set_divergence_handler(&mut self, handler: DivergenceHandler) {
+        self.vm_divergence_handler = handler;
     }
 
     /// Sets a histogram for measuring VM execution latency.
@@ -137,21 +140,20 @@ where
                 self.missed_storage_invocation_limit
             }
         };
-
         let fast_vm_mode = self.select_fast_vm_mode(&env, &tracing_params);
-        let panic_on_divergence = self.panic_on_divergence;
+        let vm_divergence_handler = self.vm_divergence_handler.clone();
         let execution_latency_histogram = self.execution_latency_histogram;
         let current_span = tracing::Span::current();
         tokio::task::spawn_blocking(move || {
             let _entered_span = current_span.entered();
             let storage_view = StorageView::new(storage).to_rc_ptr();
             let sandbox = VmSandbox {
-                fast_vm_mode: fast_vm_mode.clone(),
-                panic_on_divergence: panic_on_divergence.clone(),
+                fast_vm_mode,
+                vm_divergence_handler,
+                storage_view,
                 env,
                 execution_args: args,
-                execution_latency_histogram: execution_latency_histogram.clone(),
-                storage_view,
+                execution_latency_histogram,
             };
             sandbox.execute_in_vm(|vm, transaction| {
                 vm.inspect_transaction_with_bytecode_compression(
@@ -182,7 +184,7 @@ where
         };
         let fast_vm_mode = self.select_fast_vm_mode(&env, &tracing_params);
         let execution_latency_histogram = self.execution_latency_histogram;
-        let panic_on_divergence = self.panic_on_divergence;
+        let panic_on_divergence = self.vm_divergence_handler.clone();
         tokio::task::spawn_blocking(move || {
             let mut results = Vec::new();
             let storage_view = StorageView::new(storage).to_rc_ptr();
@@ -190,7 +192,7 @@ where
                 let executor =
                     VmSandbox {
                         fast_vm_mode: fast_vm_mode.clone(),
-                        panic_on_divergence: panic_on_divergence.clone(),
+                        vm_divergence_handler: panic_on_divergence.clone(),
                         env: env.clone(),
                         execution_args: args,
                         execution_latency_histogram: execution_latency_histogram.clone(),
@@ -233,7 +235,7 @@ where
         );
 
         let l1_batch_env = env.l1_batch.clone();
-        let panic_on_divergence = self.panic_on_divergence.clone();
+        let vm_divergence_handler = self.vm_divergence_handler.clone();
         let execution_latency_histogram = self.execution_latency_histogram.clone();
         let fast_vm_mode = self.fast_vm_mode.clone();
         let current_span = tracing::Span::current();
@@ -246,13 +248,12 @@ where
                 } else {
                     fast_vm_mode
                 },
-                panic_on_divergence,
+                vm_divergence_handler,
                 storage_view,
                 env,
                 execution_args: TxExecutionArgs::for_validation(tx),
                 execution_latency_histogram,
             };
-
             let version = sandbox.env.system.version.into();
             let batch_timestamp = l1_batch_env.timestamp;
 
@@ -421,7 +422,7 @@ where
 #[derive(Debug)]
 struct VmSandbox<S> {
     fast_vm_mode: FastVmMode,
-    panic_on_divergence: bool,
+    vm_divergence_handler: DivergenceHandler,
     env: OneshotEnv,
     execution_args: TxExecutionArgs,
     execution_latency_histogram: Option<&'static vise::Histogram<Duration>>,
@@ -524,13 +525,12 @@ impl<S: ReadStorage> VmSandbox<S> {
             FastVmMode::Shadow => {
                 let mut vm =
                     ShadowVm::new(self.env.l1_batch, self.env.system, storage_view.clone());
-                if !self.panic_on_divergence {
-                    let transaction = format!("{:?}", transaction);
-                    let handler = DivergenceHandler::new(move |errors, _| {
-                        tracing::error!(transaction, ?mode, "{errors}");
-                    });
-                    vm.set_divergence_handler(handler);
-                }
+                let transaction = format!("{transaction:?}");
+                let full_handler = DivergenceHandler::new(move |errors, vm_dump| {
+                    tracing::error!(transaction, ?mode, "{errors}");
+                    self.vm_divergence_handler.handle(errors, vm_dump);
+                });
+                vm.set_divergence_handler(full_handler);
                 Vm::Fast(storage_view.clone(), FastVmInstance::Shadowed(vm))
             }
         };

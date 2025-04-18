@@ -5,6 +5,7 @@ use xshell::Shell;
 use zkstack_cli_common::{
     config::global_config,
     forge::{Forge, ForgeScriptArgs},
+    logger,
     wallets::Wallet,
 };
 use zkstack_cli_config::{
@@ -15,10 +16,9 @@ use zkstack_cli_config::{
         script_params::{DEPLOY_GATEWAY_CTM, GATEWAY_GOVERNANCE_TX_PATH1, GATEWAY_PREPARATION},
     },
     traits::{ReadConfig, SaveConfig, SaveConfigWithBasePath},
-    ChainConfig, EcosystemConfig,
+    ChainConfig, EcosystemConfig, GatewayConfig,
 };
 use zksync_basic_types::H256;
-use zksync_config::configs::GatewayConfig;
 
 use crate::{
     messages::MSG_CHAIN_NOT_INITIALIZED,
@@ -54,10 +54,7 @@ pub async fn run(args: ForgeScriptArgs, shell: &Shell) -> anyhow::Result<()> {
     let chain_config = ecosystem_config
         .load_chain(chain_name)
         .context(MSG_CHAIN_NOT_INITIALIZED)?;
-    let l1_url = chain_config
-        .get_secrets_config()
-        .await?
-        .get::<String>("l1.l1_rpc_url")?;
+    let l1_url = chain_config.get_secrets_config().await?.l1_rpc_url()?;
     let mut chain_contracts_config = chain_config.get_contracts_config()?;
     let chain_genesis_config = chain_config.get_genesis_config().await?;
     let genesis_input = GenesisInput::new(&chain_genesis_config)?;
@@ -284,10 +281,10 @@ pub async fn gateway_governance_whitelisting(
         )?;
     }
 
-    println!(
+    logger::info(format!(
         "Gateway registered as a settlement layer with L2 hash: {}",
         hash
-    );
+    ));
 
     let hash = call_script(
         shell,
@@ -317,10 +314,10 @@ pub async fn gateway_governance_whitelisting(
     }
 
     // Just in case, the L2 tx may or may not fail depending on whether it was executed previously,
-    println!(
+    logger::info(format!(
         "Gateway STM whitelisted L2 hash: {}",
         hex::encode(hash.as_bytes())
-    );
+    ));
 
     let hash = call_script(
         shell,
@@ -347,10 +344,10 @@ pub async fn gateway_governance_whitelisting(
     }
 
     // Just in case, the L2 tx may or may not fail depending on whether it was executed previously,
-    println!(
+    logger::info(format!(
         "Gateway STM asset handler is set L2 hash: {}",
         hex::encode(hash.as_bytes())
-    );
+    ));
 
     let hash = call_script(
         shell,
@@ -380,10 +377,10 @@ pub async fn gateway_governance_whitelisting(
     }
 
     // Just in case, the L2 tx may or may not fail depending on whether it was executed previously,
-    println!(
+    logger::info(format!(
         "Asset Id is registered in L2 bridgehub. L2 hash: {}",
         hex::encode(hash.as_bytes())
-    );
+    ));
 
     Ok(())
 }
