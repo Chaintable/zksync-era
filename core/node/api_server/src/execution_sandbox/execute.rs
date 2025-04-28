@@ -231,7 +231,7 @@ impl SandboxExecutor {
             .prepare_env_and_storage(connection, &block_args, &action)
             .await?;
         let state_override = state_override.unwrap_or_default();
-        let storage = apply_state_override(storage, &state_override);
+        let storage = apply_state_override(storage, state_override);
         let (_, tracing_params) = action.into_parts();
         let res = self
             .engine

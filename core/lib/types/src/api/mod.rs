@@ -989,13 +989,6 @@ pub struct L1ToL2TxsStatus {
     pub l1_to_l2_txs_paused: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct L1ToL2TxsStatus {
-    pub l1_to_l2_txs_in_mempool: usize,
-    pub l1_to_l2_txs_paused: bool,
-}
-
 /// OpenEthereum-style's Call type.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
