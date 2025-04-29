@@ -834,6 +834,7 @@ impl CallTracerBlockResult {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum CallTracerResult {
