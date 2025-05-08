@@ -25,7 +25,7 @@ use zksync_web3_decl::{
     },
     namespaces::{
         DebugNamespaceServer, EnNamespaceServer, EthNamespaceServer, EthPubSubServer,
-        NetNamespaceServer, SnapshotsNamespaceServer, UnstableNamespaceServer, Web3NamespaceServer,
+        NetNamespaceServer, PreNamespaceServer, SnapshotsNamespaceServer, TraceNamespaceServer, UnstableNamespaceServer, Web3NamespaceServer,
         ZksNamespaceServer,
     },
     types::Filter,
@@ -411,8 +411,18 @@ impl ApiServer {
         }
 
         if namespaces.contains(&Namespace::Debug) {
-            rpc.merge(DebugNamespace::new(rpc_state.clone()).await?.into_rpc())
+            rpc.merge(DebugNamespaceServer::into_rpc(
+                DebugNamespace::new(rpc_state.clone()).await?,
+            ))
                 .context("cannot merge debug namespace")?;
+            rpc.merge(PreNamespaceServer::into_rpc(
+                DebugNamespace::new(rpc_state.clone()).await?,
+            ))
+                .context("cannot merge pre namespace")?;
+            rpc.merge(TraceNamespaceServer::into_rpc(
+                DebugNamespace::new(rpc_state.clone()).await?,
+            ))
+                .context("cannot merge trace namespace")?;
         }
         if namespaces.contains(&Namespace::Eth) {
             rpc.merge(EthNamespace::new(rpc_state.clone()).into_rpc())
