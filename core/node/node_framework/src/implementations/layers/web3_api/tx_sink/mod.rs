@@ -6,3 +6,4 @@ pub use self::{
 pub mod deny_list_pool_sink;
 pub mod master_pool_sink;
 pub mod proxy_sink;
+pub mod whitelist;

@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use tokio::sync::watch;
 use zksync_config::configs::eth_sender::SenderConfig;
 use zksync_contracts::BaseSystemContractsHashes;
 use zksync_dal::{Connection, ConnectionPool, Core, CoreDal};
-use zksync_eth_client::{BoundEthInterface, CallFunctionArgs, ContractCallError};
+use zksync_eth_client::{BoundEthInterface, CallFunctionArgs, ContractCallError, EthInterface};
 use zksync_health_check::{Health, HealthStatus, HealthUpdater, ReactiveHealthCheck};
 use zksync_l1_contract_interface::{
     i_executor::{
@@ -15,14 +17,15 @@ use zksync_l1_contract_interface::{
 use zksync_shared_metrics::BlockL1Stage;
 use zksync_types::{
     aggregated_operations::AggregatedActionType,
-    commitment::{L1BatchCommitmentMode, L1BatchWithMetadata, SerializeCommitment},
+    commitment::{L1BatchWithMetadata, SerializeCommitment},
     eth_sender::{EthTx, EthTxBlobSidecar, EthTxBlobSidecarV1, SidecarBlobV1},
     ethabi::{Function, Token},
     l2_to_l1_log::UserL2ToL1Log,
     protocol_version::{L1VerifierConfig, PACKED_SEMVER_MINOR_MASK},
     pubdata_da::PubdataSendingMode,
-    settlement::SettlementMode,
-    web3::{contract::Error as Web3ContractError, BlockNumber},
+    server_notification::GatewayMigrationState,
+    settlement::SettlementLayer,
+    web3::{contract::Error as Web3ContractError, CallRequest},
     Address, L2ChainId, ProtocolVersionId, SLChainId, H256, U256,
 };
 
@@ -60,28 +63,22 @@ pub struct EthTxAggregator {
     aggregator: Aggregator,
     eth_client: Box<dyn BoundEthInterface>,
     config: SenderConfig,
-    // The validator timelock address provided in the config.
-    // If the contracts have the same protocol version as the state transition manager, the validator timelock
-    // from the state transition manager will be used.
-    // The address provided from the config is only used when there is a discrepancy between the two.
-    // TODO(EVM-932): always fetch the validator timelock from L1, but it requires a protocol change.
     config_timelock_contract_address: Address,
     l1_multicall3_address: Address,
     pub(super) state_transition_chain_contract: Address,
     state_transition_manager_address: Address,
     functions: ZkSyncFunctions,
-    base_nonce: u64,
-    base_nonce_custom_commit_sender: Option<u64>,
     rollup_chain_id: L2ChainId,
     /// If set to `Some` node is operating in the 4844 mode with two operator
     /// addresses at play: the main one and the custom address for sending commit
-    /// transactions. The `Some` then contains the address of this custom operator
-    /// address.
-    custom_commit_sender_addr: Option<Address>,
+    /// transactions. The `Some` then contains client for this custom operator address.
+    eth_client_blobs: Option<Box<dyn BoundEthInterface>>,
     pool: ConnectionPool<Core>,
-    settlement_mode: SettlementMode,
     sl_chain_id: SLChainId,
     health_updater: HealthUpdater,
+    priority_tree_start_index: Option<usize>,
+    settlement_layer: SettlementLayer,
+    initial_pending_nonces: HashMap<Address, u64>,
 }
 
 struct TxData {
@@ -98,29 +95,26 @@ impl EthTxAggregator {
         config: SenderConfig,
         aggregator: Aggregator,
         eth_client: Box<dyn BoundEthInterface>,
+        eth_client_blobs: Option<Box<dyn BoundEthInterface>>,
         config_timelock_contract_address: Address,
         state_transition_manager_address: Address,
         l1_multicall3_address: Address,
         state_transition_chain_contract: Address,
         rollup_chain_id: L2ChainId,
-        custom_commit_sender_addr: Option<Address>,
-        settlement_mode: SettlementMode,
+        settlement_layer: SettlementLayer,
     ) -> Self {
         let eth_client = eth_client.for_component("eth_tx_aggregator");
-        let functions = ZkSyncFunctions::default();
-        let base_nonce = eth_client.pending_nonce().await.unwrap().as_u64();
+        let eth_client_blobs = eth_client_blobs.map(|c| c.for_component("eth_tx_aggregator"));
 
-        let base_nonce_custom_commit_sender = match custom_commit_sender_addr {
-            Some(addr) => Some(
-                (*eth_client)
-                    .as_ref()
-                    .nonce_at_for_account(addr, BlockNumber::Pending)
-                    .await
-                    .unwrap()
-                    .as_u64(),
-            ),
-            None => None,
-        };
+        let functions = ZkSyncFunctions::default();
+
+        let mut initial_pending_nonces = HashMap::new();
+        for client in eth_client_blobs.iter().chain(std::iter::once(&eth_client)) {
+            let address = client.sender_account();
+            let nonce = client.pending_nonce().await.unwrap().as_u64();
+
+            initial_pending_nonces.insert(address, nonce);
+        }
 
         let sl_chain_id = (*eth_client).as_ref().fetch_chain_id().await.unwrap();
 
@@ -133,14 +127,14 @@ impl EthTxAggregator {
             l1_multicall3_address,
             state_transition_chain_contract,
             functions,
-            base_nonce,
-            base_nonce_custom_commit_sender,
             rollup_chain_id,
-            custom_commit_sender_addr,
+            eth_client_blobs,
             pool,
-            settlement_mode,
             sl_chain_id,
             health_updater: ReactiveHealthCheck::new("eth_tx_aggregator").1,
+            priority_tree_start_index: None,
+            settlement_layer,
+            initial_pending_nonces,
         }
     }
 
@@ -531,6 +525,7 @@ impl EthTxAggregator {
         &mut self,
         storage: &mut Connection<'_, Core>,
     ) -> Result<(), EthSenderError> {
+        let gateway_migration_state = self.gateway_status(storage).await;
         let MulticallData {
             base_system_contracts_hashes,
             verifier_address,
@@ -562,11 +557,21 @@ impl EthTxAggregator {
             fflonk_snark_wrapper_vk_hash,
         };
 
+        let priority_tree_start_index =
+            if let Some(priority_tree_start_index) = self.priority_tree_start_index {
+                Some(priority_tree_start_index)
+            } else {
+                self.priority_tree_start_index =
+                    get_priority_tree_start_index(self.eth_client.as_ref()).await?;
+                self.priority_tree_start_index
+            };
+        let commit_restriction = self
+            .config
+            .tx_aggregation_only_prove_and_execute
+            .then_some("tx_aggregation_only_prove_and_execute=true");
+
         let mut op_restrictions = OperationSkippingRestrictions {
-            commit_restriction: self
-                .config
-                .tx_aggregation_only_prove_and_execute
-                .then_some("tx_aggregation_only_prove_and_execute=true"),
+            commit_restriction,
             prove_restriction: None,
             execute_restriction: Self::is_pending_gateway_upgrade(
                 storage,
@@ -582,6 +587,13 @@ impl EthTxAggregator {
             op_restrictions.execute_restriction = reason;
         }
 
+        if gateway_migration_state == GatewayMigrationState::InProgress {
+            let reason = Some("Gateway migration started");
+            op_restrictions.commit_restriction = reason;
+            op_restrictions.prove_restriction = reason;
+            op_restrictions.execute_restriction = reason;
+        }
+
         if let Some(agg_op) = self
             .aggregator
             .get_next_ready_operation(
@@ -590,10 +602,11 @@ impl EthTxAggregator {
                 chain_protocol_version_id,
                 l1_verifier_config,
                 op_restrictions,
+                priority_tree_start_index,
             )
             .await?
         {
-            let is_gateway = self.settlement_mode.is_gateway();
+            let is_gateway = self.settlement_layer.is_gateway();
             let tx = self
                 .save_eth_tx(
                     storage,
@@ -766,38 +779,48 @@ impl EthTxAggregator {
         // We may be using a custom sender for commit transactions, so use this
         // var whatever it actually is: a `None` for single-addr operator or `Some`
         // for multi-addr operator in 4844 mode.
-        let sender_addr = match (op_type, is_gateway) {
-            (AggregatedActionType::Commit, false) => self.custom_commit_sender_addr,
-            (_, _) => None,
+        let (sender_addr, is_non_blob_sender) = match (op_type, is_gateway) {
+            (AggregatedActionType::Commit, false) => self
+                .eth_client_blobs
+                .as_ref()
+                .map(|c| (c.sender_account(), false))
+                .unwrap_or_else(|| (self.eth_client.sender_account(), true)),
+            (_, _) => (self.eth_client.sender_account(), true),
         };
-        let nonce = self.get_next_nonce(&mut transaction, sender_addr).await?;
+        let nonce = self
+            .get_next_nonce(&mut transaction, sender_addr, is_non_blob_sender)
+            .await?;
         let encoded_aggregated_op =
             self.encode_aggregated_op(aggregated_op, chain_protocol_version_id);
         let l1_batch_number_range = aggregated_op.l1_batch_range();
 
-        let eth_tx_predicted_gas = match (op_type, is_gateway, self.aggregator.mode()) {
-            (AggregatedActionType::Execute, false, _) => Some(
+        let eth_tx_predicted_gas = match op_type {
+            AggregatedActionType::Execute => {
                 L1GasCriterion::total_execute_gas_amount(
                     &mut transaction,
                     l1_batch_number_range.clone(),
+                    is_gateway,
                 )
-                .await,
+                .await
+            }
+            AggregatedActionType::PublishProofOnchain => {
+                L1GasCriterion::total_proof_gas_amount(is_gateway)
+            }
+            AggregatedActionType::Commit => L1GasCriterion::total_commit_validium_gas_amount(
+                l1_batch_number_range.clone(),
+                is_gateway,
             ),
-            (AggregatedActionType::Commit, false, L1BatchCommitmentMode::Validium) => Some(
-                L1GasCriterion::total_validium_commit_gas_amount(l1_batch_number_range.clone()),
-            ),
-            _ => None,
         };
 
-        let eth_tx = transaction
+        let mut eth_tx = transaction
             .eth_sender_dal()
             .save_eth_tx(
                 nonce,
                 encoded_aggregated_op.calldata,
                 op_type,
                 timelock_contract_address,
-                eth_tx_predicted_gas,
-                sender_addr,
+                Some(eth_tx_predicted_gas),
+                Some(sender_addr),
                 encoded_aggregated_op.sidecar,
                 is_gateway,
             )
@@ -809,7 +832,7 @@ impl EthTxAggregator {
             .set_chain_id(eth_tx.id, self.sl_chain_id.0)
             .await
             .unwrap();
-
+        eth_tx.chain_id = Some(self.sl_chain_id);
         transaction
             .blocks_dal()
             .set_eth_tx_id(l1_batch_number_range, eth_tx.id, op_type)
@@ -822,23 +845,19 @@ impl EthTxAggregator {
     async fn get_next_nonce(
         &self,
         storage: &mut Connection<'_, Core>,
-        from_addr: Option<Address>,
+        from_addr: Address,
+        is_non_blob_sender: bool,
     ) -> Result<u64, EthSenderError> {
-        let is_gateway = self.settlement_mode.is_gateway();
+        let is_gateway = self.settlement_layer.is_gateway();
         let db_nonce = storage
             .eth_sender_dal()
-            .get_next_nonce(from_addr, is_gateway)
+            .get_next_nonce(from_addr, is_non_blob_sender, is_gateway)
             .await
             .unwrap()
             .unwrap_or(0);
         // Between server starts we can execute some txs using operator account or remove some txs from the database
         // At the start we have to consider this fact and get the max nonce.
-        let l1_nonce = if from_addr.is_none() {
-            self.base_nonce
-        } else {
-            self.base_nonce_custom_commit_sender
-                .expect("custom base nonce is expected to be initialized; qed")
-        };
+        let l1_nonce = self.initial_pending_nonces[&from_addr];
         tracing::info!(
             "Next nonce from db: {}, nonce from L1: {} for address: {:?}",
             db_nonce,
@@ -852,4 +871,71 @@ impl EthTxAggregator {
     pub fn health_check(&self) -> ReactiveHealthCheck {
         self.health_updater.subscribe()
     }
+
+    async fn gateway_status(&self, storage: &mut Connection<'_, Core>) -> GatewayMigrationState {
+        let notification = storage
+            .server_notifications_dal()
+            .get_latest_gateway_migration_notification()
+            .await
+            .unwrap();
+
+        GatewayMigrationState::from_sl_and_notification(self.settlement_layer, notification)
+    }
+}
+
+async fn query_contract(
+    l1_client: &dyn BoundEthInterface,
+    method_name: &str,
+    params: &[Token],
+) -> Result<Token, EthSenderError> {
+    let data = l1_client
+        .contract()
+        .function(method_name)
+        .unwrap()
+        .encode_input(params)
+        .unwrap();
+
+    let eth_interface: &dyn EthInterface = AsRef::<dyn EthInterface>::as_ref(l1_client);
+
+    let result = eth_interface
+        .call_contract_function(
+            CallRequest {
+                data: Some(data.into()),
+                to: Some(l1_client.contract_addr()),
+                ..CallRequest::default()
+            },
+            None,
+        )
+        .await?;
+    Ok(l1_client
+        .contract()
+        .function(method_name)
+        .unwrap()
+        .decode_output(&result.0)
+        .unwrap()[0]
+        .clone())
+}
+
+async fn get_priority_tree_start_index(
+    l1_client: &dyn BoundEthInterface,
+) -> Result<Option<usize>, EthSenderError> {
+    let packed_semver = query_contract(l1_client, "getProtocolVersion", &[])
+        .await?
+        .into_uint()
+        .unwrap();
+
+    // We always expect the provided version to be correct, so we panic if it is not
+    let version = ProtocolVersionId::try_from_packed_semver(packed_semver).unwrap();
+
+    // For pre-gateway versions the index is not supported.
+    if version.is_pre_gateway() {
+        return Ok(None);
+    }
+
+    let priority_tree_start_index = query_contract(l1_client, "getPriorityTreeStartIndex", &[])
+        .await?
+        .into_uint()
+        .unwrap();
+
+    Ok(Some(priority_tree_start_index.as_usize()))
 }
