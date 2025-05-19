@@ -150,7 +150,7 @@ where
             let storage_view = StorageView::new(storage).to_rc_ptr();
             let sandbox = VmSandbox {
                 fast_vm_mode: fast_vm_mode.clone(),
-                panic_on_divergence: panic_on_divergence.clone(),
+                vm_divergence_handler,
                 env,
                 execution_args: args,
                 execution_latency_histogram: execution_latency_histogram.clone(),
@@ -185,14 +185,14 @@ where
         };
         let fast_vm_mode = self.select_fast_vm_mode(&env, &tracing_params);
         let execution_latency_histogram = self.execution_latency_histogram;
-        let panic_on_divergence = self.panic_on_divergence;
+        let panic_on_divergence = self.vm_divergence_handler.clone();
         tokio::task::spawn_blocking(move || {
             let mut results = Vec::new();
             let storage_view = StorageView::new(storage).to_rc_ptr();
             for args in args {
                 let executor = VmSandbox {
                     fast_vm_mode: fast_vm_mode.clone(),
-                    panic_on_divergence: panic_on_divergence.clone(),
+                    vm_divergence_handler: panic_on_divergence.clone(),
                     env: env.clone(),
                     execution_args: args,
                     execution_latency_histogram: execution_latency_histogram.clone(),

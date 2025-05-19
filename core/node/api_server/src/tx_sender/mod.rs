@@ -75,13 +75,6 @@ pub struct TxSenderBuilderConfigs {
     pub tx_sink_config: Option<TxSinkConfig>,
 }
 
-pub struct TxSenderBuilderConfigs {
-    pub tx_sender_config: TxSenderConfig,
-    pub web3_json_config: Web3JsonRpcConfig,
-    pub state_keeper_config: StateKeeperConfig,
-    pub tx_sink_config: Option<TxSinkConfig>,
-}
-
 pub async fn build_tx_sender(
     builder_config: TxSenderBuilderConfigs,
     replica_pool: ConnectionPool<Core>,
