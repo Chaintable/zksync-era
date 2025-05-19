@@ -9,7 +9,7 @@ use crate::{
     storage::{ReadStorage, StorageView},
     tracer::{ValidationError, ValidationParams, ValidationTraces},
     BatchTransactionExecutionResult, FinishedL1Batch, L1BatchEnv, L2BlockEnv, OneshotEnv,
-    OneshotTracingParams, OneshotTransactionExecutionResult, SystemEnv, TxExecutionArgs,
+    OneshotTracingParams, OneshotTransactionExecutionResult, Call, SystemEnv, TxExecutionArgs,VmExecutionResultAndLogs
 };
 
 /// Factory of [`BatchExecutor`]s.
@@ -57,6 +57,14 @@ pub trait OneshotExecutor<S: ReadStorage> {
         args: TxExecutionArgs,
         tracing: OneshotTracingParams,
     ) -> anyhow::Result<OneshotTransactionExecutionResult>;
+
+    async fn inspect_transactions_with_bytecode_compression(
+        &self,
+        storage: S,
+        env: OneshotEnv,
+        args: Vec<TxExecutionArgs>,
+        tracing_params: OneshotTracingParams,
+    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>>;
 }
 
 /// VM executor capable of validating transactions.

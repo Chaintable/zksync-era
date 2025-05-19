@@ -288,7 +288,7 @@ pub enum BlockArgsError {
 #[derive(Debug, Clone)]
 pub(crate) struct BlockArgs {
     inner: BlockInfo,
-    resolved: ResolvedBlockInfo,
+    pub resolved: ResolvedBlockInfo,
     block_id: api::BlockId,
 }
 
