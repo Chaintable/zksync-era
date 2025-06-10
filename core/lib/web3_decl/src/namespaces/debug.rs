@@ -6,7 +6,7 @@ use zksync_types::{
     transaction_request::CallRequest,
     web3::Bytes,
 };
-
+use zksync_types::api::{PreResult, TransactionReceipt};
 use crate::{
     client::{ForWeb3Network, L2},
     types::H256,
@@ -55,4 +55,17 @@ pub trait DebugNamespace {
 
     #[method(name = "getRawTransactions")]
     async fn get_raw_transactions(&self, block: BlockId) -> RpcResult<Vec<Bytes>>;
+
+    #[method(name = "getLog")]
+    async fn trace_get_log(
+        &self,
+        request: CallRequest,
+        block: Option<BlockId>,
+    ) -> RpcResult<TransactionReceipt>;
+    #[method(name = "traceMany")]
+    async fn debug_trace_many(
+        &self,
+        requests: Vec<CallRequest>,
+        block: Option<BlockId>,
+    ) -> RpcResult<Vec<PreResult>>;
 }

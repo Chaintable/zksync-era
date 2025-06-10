@@ -106,6 +106,7 @@ categories = ["cryptography"]
 [workspace.dependencies]
 # "External" dependencies
 anyhow = "1"
+rustc-hex =  "2.1.0"
 assert_matches = "1.5"
 async-trait = "0.1"
 async-recursion = "1"
