@@ -3,13 +3,14 @@ use zksync_dal::{CoreDal, DalError};
 use zksync_multivm::interface::{Call, CallType, ExecutionResult, OneshotTracingParams, TxExecutionArgs};
 use zksync_system_constants::MAX_ENCODED_TX_SIZE;
 use zksync_types::{api::{
-    flat_call, BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, DebugCall, DebugCallType, Log,
-    ResultDebugCall, SupportedTracers, TracerConfig, OpenEthActionTrace, PreError, PreResult, TransactionReceipt,
-}, debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat}, l2::L2Tx, transaction_request::CallRequest, web3, zk_evm_types::FarCallOpcode, H256, U256, U64};
+    BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, DebugCall, DebugCallType,
+    ResultDebugCall, SupportedTracers, TracerConfig,
+}, debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat}, l2::L2Tx, transaction_request::CallRequest, web3, web3::Bytes, zk_evm_types::FarCallOpcode, H256, U256, U64};
+use zksync_types::api::{flat_call, Log, OpenEthActionTrace, PreError, PreResult, TransactionReceipt};
 use zksync_web3_decl::error::Web3Error;
 
 use crate::{
-    execution_sandbox::{SandboxAction},
+    execution_sandbox::SandboxAction,
     web3::{backend_jsonrpsee::MethodTracer, state::RpcState},
 };
 
@@ -382,6 +383,44 @@ impl DebugNamespace {
             ..Default::default()
         };
         Ok(Self::map_call(call, meta, options))
+    }
+
+    pub async fn debug_get_raw_transaction_impl(
+        &self,
+        hash: H256,
+    ) -> Result<Option<Bytes>, Web3Error> {
+        let mut connection = self.state.acquire_connection().await?;
+        let raw_tx_bytes = connection
+            .transactions_web3_dal()
+            .get_raw_transaction_bytes(hash)
+            .await
+            .map_err(DalError::generalize)?;
+        Ok(raw_tx_bytes.map(Bytes::from))
+    }
+
+    pub async fn debug_get_raw_transactions_impl(
+        &self,
+        block_id: BlockId,
+    ) -> Result<Vec<Bytes>, Web3Error> {
+        self.current_method().set_block_id(block_id);
+        if matches!(block_id, BlockId::Number(BlockNumber::Pending)) {
+            // See `EthNamespace::get_block_impl()` for an explanation why this check is needed.
+            return Ok(vec![]);
+        }
+
+        let mut connection = self.state.acquire_connection().await?;
+        self.state
+            .start_info
+            .ensure_not_pruned(block_id, &mut connection)
+            .await?;
+
+        let block_number = self.state.resolve_block(&mut connection, block_id).await?;
+        let raw_txs_bytes = connection
+            .transactions_web3_dal()
+            .get_l2_block_raw_transactions_bytes(block_number)
+            .await
+            .map_err(DalError::generalize)?;
+        Ok(raw_txs_bytes.into_iter().map(Bytes::from).collect())
     }
     pub async fn debug_trace_get_log_impl(
         &self,

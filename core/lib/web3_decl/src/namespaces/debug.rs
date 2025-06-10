@@ -2,10 +2,11 @@
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 use zksync_types::{
-    api::{BlockId, BlockNumber, PreResult, TransactionReceipt, CallTracerBlockResult, CallTracerResult, TracerConfig},
-    transaction_request::{CallRequest},
+    api::{BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, TracerConfig},
+    transaction_request::CallRequest,
+    web3::Bytes,
 };
-
+use zksync_types::api::{PreResult, TransactionReceipt};
 use crate::{
     client::{ForWeb3Network, L2},
     types::H256,
@@ -48,6 +49,12 @@ pub trait DebugNamespace {
         tx_hash: H256,
         options: Option<TracerConfig>,
     ) -> RpcResult<Option<CallTracerResult>>;
+
+    #[method(name = "getRawTransaction")]
+    async fn get_raw_transaction(&self, tx_hash: H256) -> RpcResult<Option<Bytes>>;
+
+    #[method(name = "getRawTransactions")]
+    async fn get_raw_transactions(&self, block: BlockId) -> RpcResult<Vec<Bytes>>;
 
     #[method(name = "getLog")]
     async fn trace_get_log(

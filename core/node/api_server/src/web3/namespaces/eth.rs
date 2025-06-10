@@ -27,8 +27,8 @@ use crate::{
     tx_sender::BinarySearchKind,
     utils::open_readonly_transaction,
     web3::{
-        backend_jsonrpsee::MethodTracer, metrics::API_METRICS, receipts::fill_transaction_receipts,
-        state::RpcState, TypedFilter,
+        backend_jsonrpsee::MethodTracer, receipts::fill_transaction_receipts, state::RpcState,
+        TypedFilter,
     },
 };
 
@@ -97,7 +97,8 @@ impl EthNamespace {
             .state
             .tx_sender
             .eth_call(block_args, call_overrides, tx, state_override)
-            .await?;
+            .await
+            .map_err(|err| self.current_method().map_submit_err(err))?;
         Ok(call_result.into())
     }
     pub async fn multi_call_impl(
@@ -242,7 +243,8 @@ impl EthNamespace {
             .state
             .tx_sender
             .eth_call_raw(block_args, call_overrides, tx, None)
-            .await?;
+            .await
+            .map_err(|err| self.current_method().map_submit_err(err))?;
         match call_result.result {
             ExecutionResult::Success { output } => {
                 let resp = CallResult {
@@ -341,7 +343,8 @@ impl EthNamespace {
                 state_override,
                 search_kind,
             )
-            .await?;
+            .await
+            .map_err(|err| self.current_method().map_submit_err(err))?;
         Ok(fee.gas_limit)
     }
 
@@ -855,11 +858,9 @@ impl EthNamespace {
         tx.set_input(tx_bytes.0, hash);
 
         let submit_result = self.state.tx_sender.submit_tx(tx, block_args).await;
-        submit_result.map(|_| hash).map_err(|err| {
-            tracing::debug!("Send raw transaction error: {err}");
-            API_METRICS.submit_tx_error[&err.prom_error_code()].inc();
-            err.into()
-        })
+        submit_result
+            .map(|_| hash)
+            .map_err(|err| self.current_method().map_submit_err(err))
     }
 
     pub fn accounts_impl(&self) -> Vec<Address> {
