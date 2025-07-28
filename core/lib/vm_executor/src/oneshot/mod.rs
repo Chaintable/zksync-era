@@ -151,10 +151,6 @@ where
                 self.missed_storage_invocation_limit
             }
         };
-        let fast_vm_mode = self.select_fast_vm_mode(&env, &tracing_params);
-        let vm_divergence_handler = self.vm_divergence_handler.clone();
-        let execution_latency_histogram = self.execution_latency_histogram;
-        let interrupted_execution_latency_histogram = self.interrupted_execution_latency_histogram;
 
         let op_name = match env.system.execution_mode {
             TxExecutionMode::VerifyExecute => "oneshot_vm#execute",
@@ -162,23 +158,21 @@ where
             TxExecutionMode::EstimateFee => "oneshot_vm#estimate_fee",
         };
 
+        let (_stop_guard, stop_token) = StopGuard::new();
+        let sandbox = VmSandbox {
+            fast_vm_mode: self.select_fast_vm_mode(&env, &tracing_params),
+            vm_divergence_handler: self.vm_divergence_handler.clone(),
+            storage,
+            env,
+            stop_token,
+            execution_args: args,
+            execution_latency_histogram: self.execution_latency_histogram,
+            interrupted_execution_latency_histogram: self.interrupted_execution_latency_histogram,
+        };
         let current_span = tracing::Span::current();
         tokio::task::spawn_blocking(move || {
-            let (_stop_guard, stop_token) = StopGuard::new();
             let _entered_span = current_span.entered();
-            let storage_view = StorageView::new(storage).to_rc_ptr();
-            let sandbox = VmSandbox {
-                fast_vm_mode,
-                vm_divergence_handler,
-                storage_view,
-                env,
-                stop_token,
-                execution_args: args,
-                execution_latency_histogram,
-                interrupted_execution_latency_histogram,
-            };
-
-            let _guard = AllocationGuard::new(op_name);
+            let _guard = AllocationGuard::for_operation(op_name);
             sandbox.execute_in_vm(|stop_token, vm, transaction| {
                 vm.inspect_transaction_with_bytecode_compression(
                     stop_token.clone(),
@@ -264,30 +258,26 @@ where
         );
 
         let l1_batch_env = env.l1_batch.clone();
-        let vm_divergence_handler = self.vm_divergence_handler.clone();
-        let execution_latency_histogram = self.execution_latency_histogram.clone();
-        let fast_vm_mode = self.fast_vm_mode.clone();
-        let interrupted_execution_latency_histogram = self.interrupted_execution_latency_histogram;
+        let (_stop_guard, stop_token) = StopGuard::new();
+        let sandbox = VmSandbox {
+            fast_vm_mode: if !is_supported_by_fast_vm(env.system.version) {
+                FastVmMode::Old // the fast VM doesn't support old protocol versions
+            } else {
+                self.fast_vm_mode
+            },
+            vm_divergence_handler: self.vm_divergence_handler.clone(),
+            storage,
+            env,
+            stop_token,
+            execution_args: TxExecutionArgs::for_validation(tx),
+            execution_latency_histogram: self.execution_latency_histogram,
+            interrupted_execution_latency_histogram: self.interrupted_execution_latency_histogram,
+        };
+
         let current_span = tracing::Span::current();
         tokio::task::spawn_blocking(move || {
-            let (_stop_guard, stop_token) = StopGuard::new();
             let _entered_span = current_span.entered();
-            let storage_view = StorageView::new(storage).to_rc_ptr();
-            let sandbox = VmSandbox {
-                fast_vm_mode: if !is_supported_by_fast_vm(env.system.version) {
-                    FastVmMode::Old // the fast VM doesn't support old protocol versions
-                } else {
-                    fast_vm_mode
-                },
-                vm_divergence_handler,
-                storage_view,
-                stop_token,
-                env,
-                execution_args: TxExecutionArgs::for_validation(tx),
-                execution_latency_histogram,
-                interrupted_execution_latency_histogram,
-            };
-            let _guard = AllocationGuard::new("oneshot#validate");
+            let _guard = AllocationGuard::for_operation("oneshot_vm#validate");
             let version = sandbox.env.system.version.into();
             let batch_timestamp = l1_batch_env.timestamp;
 
@@ -464,6 +454,7 @@ where
 struct VmSandbox<S> {
     fast_vm_mode: FastVmMode,
     vm_divergence_handler: DivergenceHandler,
+    storage: StorageWithOverrides<S>,
     env: OneshotEnv,
     stop_token: StopToken,
     execution_args: TxExecutionArgs,

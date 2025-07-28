@@ -38,7 +38,7 @@ struct Cli {
     /// Comma-separated list of components to launch.
     #[arg(
         long,
-        default_value = "api,tree,eth,state_keeper,housekeeper,commitment_generator,da_dispatcher,vm_runner_protective_reads"
+        default_value = "api,tree,eth,state_keeper,housekeeper,commitment_generator,da_dispatcher,vm_runner_protective_reads,consensus"
     )]
     components: ComponentsToRun,
     /// Path to the yaml config. If set, it will be used instead of env vars.
@@ -84,7 +84,7 @@ impl FromStr for ComponentsToRun {
 
 fn main() -> anyhow::Result<()> {
     let opt = Cli::parse();
-    let schema = full_config_schema(false);
+    let schema = full_config_schema();
 
     let config_file_paths = ConfigFilePaths {
         general: opt.config_path,
@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(command) = opt.cmd {
         match command {
             CliCommand::Config(config_args) => {
-                config_args.run(repo.into())?;
+                config_args.run(repo.into(), "ZKSYNC_")?;
             }
         }
         return Ok(());
@@ -138,6 +138,7 @@ fn main() -> anyhow::Result<()> {
         // it'd be possible to get rid of settlement_layer_specific_contracts in our configs.
         // For easier refactoring in the future. We can mark it as Optional
         l1_sl_contracts: Some(contracts_config.settlement_layer_specific_contracts()),
+        eth_proof_manager_contracts: Some(contracts_config.eth_proof_manager_contracts()),
         multicall3: Some(contracts_config.l1.multicall3_addr),
     };
 

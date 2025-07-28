@@ -31,7 +31,7 @@ use zksync_shared_metrics::tree::{LoadChangesStage, TreeUpdateStage, METRICS};
 use zksync_shared_resources::tree::MerkleTreeInfo;
 use zksync_storage::{RocksDB, RocksDBOptions, StalledWritesRetries, WeakRocksDB};
 use zksync_types::{
-    block::{L1BatchStatistics, L1BatchTreeData},
+    block::{CommonBlockStatistics, L1BatchTreeData},
     writes::TreeWrite,
     AccountTreeId, L1BatchNumber, StorageKey, H256,
 };
@@ -296,7 +296,7 @@ impl AsyncTree {
         let span = tracing::Span::current();
         let (tree, metadata) = tokio::task::spawn_blocking(move || {
             let _entered_span = span.entered();
-            let _guard = AllocationGuard::new("tree#process_batch");
+            let _guard = AllocationGuard::for_operation("tree#process_batch");
             let metadata = tree.process_l1_batch(&batch.storage_logs)?;
             anyhow::Ok((tree, metadata))
         })
@@ -316,7 +316,7 @@ impl AsyncTree {
         self.inner = Some(
             tokio::task::spawn_blocking(|| {
                 let _entered_span = span.entered();
-                let _guard = AllocationGuard::new("tree#save");
+                let _guard = AllocationGuard::for_operation("tree#save");
                 tree.save()?;
                 anyhow::Ok(tree)
             })
@@ -675,7 +675,7 @@ impl Delayer {
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(crate) struct L1BatchWithLogs {
-    pub stats: L1BatchStatistics,
+    pub stats: CommonBlockStatistics,
     pub storage_logs: Vec<TreeInstruction>,
     mode: MerkleTreeMode,
 }
