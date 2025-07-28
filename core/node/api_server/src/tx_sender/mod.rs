@@ -8,6 +8,12 @@ use std::{
     time::Duration,
 };
 
+pub(super) use self::{gas_estimation::BinarySearchKind, result::SubmitTxError};
+use self::{master_pool_sink::MasterPoolSink, result::ApiCallResult, tx_sink::TxSink};
+use crate::execution_sandbox::{
+    BlockArgs, SandboxAction, SandboxExecutionOutput, SandboxExecutor, SubmitTxStage,
+    VmConcurrencyBarrier, VmConcurrencyLimiter, SANDBOX_METRICS,
+};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use serde::Serialize;
@@ -42,12 +48,6 @@ use zksync_types::{
 use zksync_vm_executor::{
     interface::TransactionFilter,
     oneshot::{CallOrExecute, EstimateGas, MultiVmBaseSystemContracts, OneshotEnvParameters},
-};
-pub(super) use self::{gas_estimation::BinarySearchKind, result::SubmitTxError};
-use self::{master_pool_sink::MasterPoolSink, result::ApiCallResult, tx_sink::TxSink};
-use crate::execution_sandbox::{
-    BlockArgs, SandboxAction, SandboxExecutionOutput, SandboxExecutor, SubmitTxStage,
-    VmConcurrencyBarrier, VmConcurrencyLimiter, SANDBOX_METRICS,
 };
 
 mod gas_estimation;
@@ -719,7 +719,6 @@ impl TxSender {
         result.result.into_api_call_result()
     }
 
-<<<<<<< HEAD
     pub(super) async fn eth_call_raw(
         &self,
         block_args: BlockArgs,
@@ -745,7 +744,7 @@ impl TxSender {
         };
 
         let action = SandboxAction::Call {
-            call:tx,
+            call: tx,
             fee_input,
             enforced_base_fee: call_overrides.enforced_base_fee,
             tracing_params: OneshotTracingParams::default(),
@@ -753,21 +752,12 @@ impl TxSender {
         let result = self
             .0
             .executor
-            .execute_in_sandbox(
-                vm_permit,
-                connection,
-                action,
-                &block_args,
-                state_override,
-            )
+            .execute_in_sandbox(vm_permit, connection, action, &block_args, state_override)
             .await?;
         Ok(result)
     }
 
-    pub async fn gas_price(&self) -> anyhow::Result<u64> {
-=======
     pub async fn gas_price_and_gas_per_pubdata(&self) -> anyhow::Result<(u64, u64)> {
->>>>>>> core-v28.6.0
         let mut connection = self.acquire_replica_connection().await?;
         let protocol_version = connection
             .blocks_dal()
