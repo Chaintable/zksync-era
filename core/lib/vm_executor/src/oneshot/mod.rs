@@ -155,6 +155,13 @@ where
         let vm_divergence_handler = self.vm_divergence_handler.clone();
         let execution_latency_histogram = self.execution_latency_histogram;
         let interrupted_execution_latency_histogram = self.interrupted_execution_latency_histogram;
+
+        let op_name = match env.system.execution_mode {
+            TxExecutionMode::VerifyExecute => "oneshot_vm#execute",
+            TxExecutionMode::EthCall => "oneshot_vm#call",
+            TxExecutionMode::EstimateFee => "oneshot_vm#estimate_fee",
+        };
+
         let current_span = tracing::Span::current();
         tokio::task::spawn_blocking(move || {
             let (_stop_guard, stop_token) = StopGuard::new();
@@ -169,12 +176,6 @@ where
                 execution_args: args,
                 execution_latency_histogram,
                 interrupted_execution_latency_histogram,
-            };
-
-            let op_name = match env.system.execution_mode {
-                TxExecutionMode::VerifyExecute => "oneshot_vm#execute",
-                TxExecutionMode::EthCall => "oneshot_vm#call",
-                TxExecutionMode::EstimateFee => "oneshot_vm#estimate_fee",
             };
 
             let _guard = AllocationGuard::new(op_name);
