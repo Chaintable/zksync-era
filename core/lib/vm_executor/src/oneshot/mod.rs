@@ -14,6 +14,7 @@ use std::{
 use anyhow::Context;
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
+use zksync_instrument::alloc::AllocationGuard;
 use zksync_multivm::{
     interface::{
         executor::{OneshotExecutor, TransactionValidator},
@@ -22,7 +23,7 @@ use zksync_multivm::{
         utils::{DivergenceHandler, ShadowMut, ShadowVm},
         Call, ExecutionResult, Halt, InspectExecutionMode, OneshotEnv, OneshotTracingParams,
         OneshotTransactionExecutionResult, StoredL2BlockEnv, TxExecutionArgs, TxExecutionMode,
-        VmFactory, VmInterface, VmExecutionResultAndLogs,
+        VmExecutionResultAndLogs, VmFactory, VmInterface,
     },
     is_supported_by_fast_vm,
     tracers::{CallTracer, StorageInvocations, TracerDispatcher, ValidationTracer},
@@ -154,6 +155,13 @@ where
         let vm_divergence_handler = self.vm_divergence_handler.clone();
         let execution_latency_histogram = self.execution_latency_histogram;
         let interrupted_execution_latency_histogram = self.interrupted_execution_latency_histogram;
+
+        let op_name = match env.system.execution_mode {
+            TxExecutionMode::VerifyExecute => "oneshot_vm#execute",
+            TxExecutionMode::EthCall => "oneshot_vm#call",
+            TxExecutionMode::EstimateFee => "oneshot_vm#estimate_fee",
+        };
+
         let current_span = tracing::Span::current();
         tokio::task::spawn_blocking(move || {
             let (_stop_guard, stop_token) = StopGuard::new();
@@ -167,8 +175,10 @@ where
                 stop_token,
                 execution_args: args,
                 execution_latency_histogram,
-                interrupted_execution_latency_histogram
+                interrupted_execution_latency_histogram,
             };
+
+            let _guard = AllocationGuard::new(op_name);
             sandbox.execute_in_vm(|stop_token, vm, transaction| {
                 vm.inspect_transaction_with_bytecode_compression(
                     stop_token.clone(),
@@ -179,8 +189,8 @@ where
                 )
             })
         })
-         .await
-         .context("VM execution panicked")
+        .await
+        .context("VM execution panicked")
     }
 
     async fn inspect_transactions_with_bytecode_compression(
@@ -206,18 +216,17 @@ where
             let storage_view = StorageView::new(storage).to_rc_ptr();
             for args in args {
                 let (_stop_guard, stop_token) = StopGuard::new();
-                let executor =
-                    VmSandbox {
-                        fast_vm_mode: fast_vm_mode.clone(),
-                        vm_divergence_handler: panic_on_divergence.clone(),
-                        stop_token,
-                        env: env.clone(),
-                        execution_args: args,
-                        execution_latency_histogram: execution_latency_histogram.clone(),
-                        storage_view: storage_view.clone(),
-                        interrupted_execution_latency_histogram,
-                    };
-                let result = executor.execute_in_vm(|stop_token,vm, transaction| {
+                let executor = VmSandbox {
+                    fast_vm_mode: fast_vm_mode.clone(),
+                    vm_divergence_handler: panic_on_divergence.clone(),
+                    stop_token,
+                    env: env.clone(),
+                    execution_args: args,
+                    execution_latency_histogram: execution_latency_histogram.clone(),
+                    storage_view: storage_view.clone(),
+                    interrupted_execution_latency_histogram,
+                };
+                let result = executor.execute_in_vm(|stop_token, vm, transaction| {
                     let temp_result = vm.inspect_transaction_with_bytecode_compression(
                         stop_token.clone(),
                         missed_storage_invocation_limit,
@@ -276,8 +285,9 @@ where
                 env,
                 execution_args: TxExecutionArgs::for_validation(tx),
                 execution_latency_histogram,
-                interrupted_execution_latency_histogram
+                interrupted_execution_latency_histogram,
             };
+            let _guard = AllocationGuard::new("oneshot#validate");
             let version = sandbox.env.system.version.into();
             let batch_timestamp = l1_batch_env.timestamp;
 
