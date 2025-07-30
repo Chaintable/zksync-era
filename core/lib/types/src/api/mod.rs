@@ -1306,7 +1306,7 @@ pub fn flat_call(
                 input: call.input.into(),
                 call_type: if call.r#type == DebugCallType::Call {
                     OpenEthCallType::Call
-                }else {
+                } else {
                     OpenEthCallType::DelegateCall
                 },
             };
@@ -1385,7 +1385,8 @@ pub struct PreError {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct PreResult {
-    pub trace: Vec<OpenEthActionTrace>,
+    //pub trace: Vec<OpenEthActionTrace>,
+    pub trace: Vec<DebugCallFlat>,
     pub logs: Vec<Log>,
     pub error: PreError,
     #[serde(rename = "gasUsed")]

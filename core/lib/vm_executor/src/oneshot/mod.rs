@@ -133,13 +133,14 @@ impl MainOneshotExecutor {
 }
 
 #[async_trait]
-impl<S> OneshotExecutor<S> for MainOneshotExecutor
+//impl<S> OneshotExecutor<S> for MainOneshotExecutor
+impl<S> OneshotExecutor<StorageWithOverrides<S>> for MainOneshotExecutor
 where
     S: ReadStorage + Send + 'static,
 {
     async fn inspect_transaction_with_bytecode_compression(
         &self,
-        storage: S,
+        storage: StorageWithOverrides<S>,
         env: OneshotEnv,
         args: TxExecutionArgs,
         tracing_params: OneshotTracingParams,
@@ -167,6 +168,7 @@ where
             stop_token,
             execution_args: args,
             execution_latency_histogram: self.execution_latency_histogram,
+            //storage_view: StorageView::new(storage).to_rc_ptr(),
             interrupted_execution_latency_histogram: self.interrupted_execution_latency_histogram,
         };
         let current_span = tracing::Span::current();
@@ -189,7 +191,7 @@ where
 
     async fn inspect_transactions_with_bytecode_compression(
         &self,
-        storage: S,
+        storage: StorageWithOverrides<S>,
         env: OneshotEnv,
         args: Vec<TxExecutionArgs>,
         tracing_params: OneshotTracingParams,
@@ -201,36 +203,37 @@ where
                 self.missed_storage_invocation_limit
             }
         };
-        let fast_vm_mode = self.select_fast_vm_mode(&env, &tracing_params);
-        let execution_latency_histogram = self.execution_latency_histogram;
-        let interrupted_execution_latency_histogram = self.interrupted_execution_latency_histogram;
-        let panic_on_divergence = self.vm_divergence_handler.clone();
+        let _fast_vm_mode = self.select_fast_vm_mode(&env, &tracing_params);
+        let _execution_latency_histogram = self.execution_latency_histogram;
+        let _interrupted_execution_latency_histogram = self.interrupted_execution_latency_histogram;
+        let _panic_on_divergence = self.vm_divergence_handler.clone();
         tokio::task::spawn_blocking(move || {
             let mut results = Vec::new();
-            let storage_view = StorageView::new(storage).to_rc_ptr();
+            //let storage_view = StorageView::new(storage).to_rc_ptr();
             for args in args {
                 let (_stop_guard, stop_token) = StopGuard::new();
-                let executor = VmSandbox {
-                    fast_vm_mode: fast_vm_mode.clone(),
-                    vm_divergence_handler: panic_on_divergence.clone(),
-                    stop_token,
-                    env: env.clone(),
-                    execution_args: args,
-                    execution_latency_histogram: execution_latency_histogram.clone(),
-                    storage_view: storage_view.clone(),
-                    interrupted_execution_latency_histogram,
-                };
-                let result = executor.execute_in_vm(|stop_token, vm, transaction| {
-                    let temp_result = vm.inspect_transaction_with_bytecode_compression(
-                        stop_token.clone(),
-                        missed_storage_invocation_limit,
-                        tracing_params.clone(),
-                        transaction,
-                        true,
-                    );
-                    (*temp_result.tx_result, temp_result.call_traces)
-                });
-                results.push(result);
+                // let executor = VmSandbox {
+                //     fast_vm_mode: fast_vm_mode.clone(),
+                //     vm_divergence_handler: panic_on_divergence.clone(),
+                //     storage: StorageWithOverrides::new(storage.clone()),
+                //     env: env.clone(),
+                //     stop_token,
+                //     execution_args: args,
+                //     execution_latency_histogram: execution_latency_histogram.clone(),
+                //     //storage_view: storage_view.clone(),
+                //     interrupted_execution_latency_histogram,
+                // };
+                // let result = executor.execute_in_vm(|stop_token, vm, transaction| {
+                //     let temp_result = vm.inspect_transaction_with_bytecode_compression(
+                //         stop_token.clone(),
+                //         missed_storage_invocation_limit,
+                //         tracing_params.clone(),
+                //         transaction,
+                //         true,
+                //     );
+                //     (*temp_result.tx_result, temp_result.call_traces)
+                // });
+                // results.push(result);
             }
             results
         })
@@ -271,6 +274,7 @@ where
             stop_token,
             execution_args: TxExecutionArgs::for_validation(tx),
             execution_latency_histogram: self.execution_latency_histogram,
+            //storage_view: StorageView::new(storage).to_rc_ptr(),
             interrupted_execution_latency_histogram: self.interrupted_execution_latency_histogram,
         };
 
@@ -459,14 +463,14 @@ struct VmSandbox<S> {
     stop_token: StopToken,
     execution_args: TxExecutionArgs,
     execution_latency_histogram: Option<&'static vise::Histogram<Duration>>,
-    storage_view: StoragePtr<StorageView<S>>,
+    //storage_view: StoragePtr<StorageView<S>>,
     interrupted_execution_latency_histogram: Option<&'static vise::Histogram<Duration>>,
 }
 
 impl<S: ReadStorage> VmSandbox<S> {
     /// This method is blocking.
     fn setup_storage(
-        storage: &mut StorageView<S>,
+        storage: &mut StorageWithOverrides<S>,
         execution_args: &TxExecutionArgs,
         current_block: Option<StoredL2BlockEnv>,
     ) {
@@ -514,14 +518,16 @@ impl<S: ReadStorage> VmSandbox<S> {
 
     fn execute_in_vm<T, Tr, Val>(
         mut self,
-        action: impl FnOnce(&StopToken, &mut Vm<S, Tr, Val>, Transaction) -> T,
+        //action: impl FnOnce(&StopToken, &mut Vm<S, Tr, Val>, Transaction) -> T,
+        action: impl FnOnce(&StopToken, &mut Vm<StorageWithOverrides<S>, Tr, Val>, Transaction) -> T,
     ) -> T
     where
         Tr: vm_fast::interface::Tracer + Default,
         Val: vm_fast::ValidationTracer,
     {
         Self::setup_storage(
-            &mut self.storage_view.borrow_mut(),
+            //&mut self.storage_view.borrow_mut(),
+            &mut self.storage,
             &self.execution_args,
             self.env.current_block,
         );
@@ -544,7 +550,8 @@ impl<S: ReadStorage> VmSandbox<S> {
             transaction.nonce().unwrap_or(Nonce(0))
         );
 
-        let storage_view = self.storage_view.clone();
+        let storage_view = StorageView::new(self.storage).to_rc_ptr();
+        //let storage_view = self.storage_view.clone();
         let mut vm = match self.fast_vm_mode {
             FastVmMode::Old => Vm::Legacy(LegacyVmInstance::new_with_specific_version(
                 self.env.l1_batch,
