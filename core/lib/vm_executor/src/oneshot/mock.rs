@@ -9,7 +9,6 @@ use zksync_multivm::interface::{
     TxExecutionArgs, TxExecutionMode, VmExecutionResultAndLogs,
 };
 use zksync_types::{l2::L2Tx, Transaction};
-use zksync_vm_interface::Call;
 
 type TxResponseFn = dyn Fn(&Transaction, &OneshotEnv) -> VmExecutionResultAndLogs + Send + Sync;
 type TxValidationTracesResponseFn =
@@ -129,16 +128,6 @@ where
             compression_result: Ok(()),
             call_traces: vec![],
         })
-    }
-
-    async fn inspect_transactions_with_bytecode_compression(
-        &self,
-        _: S,
-        _: OneshotEnv,
-        _: Vec<TxExecutionArgs>,
-        _: OneshotTracingParams,
-    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>>{
-        unimplemented!()
     }
 }
 

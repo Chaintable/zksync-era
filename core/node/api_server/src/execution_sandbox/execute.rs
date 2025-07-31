@@ -25,7 +25,6 @@ use zksync_multivm::{
     utils::StorageWritesDeduplicator,
 };
 use zksync_object_store::{Bucket, ObjectStore};
-use zksync_multivm::interface::VmExecutionResultAndLogs;
 use zksync_state::{PostgresStorage, PostgresStorageCaches};
 use zksync_types::{
     api::state_override::StateOverride, fee_model::BatchFeeInput, l2::L2Tx, vm::FastVmMode,
@@ -39,7 +38,7 @@ use crate::execution_sandbox::testonly;
 use crate::{execution_sandbox::storage::apply_state_override, tx_sender::SandboxExecutorOptions};
 
 /// Action that can be executed by [`SandboxExecutor`].
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub(crate) enum SandboxAction {
     /// Execute a transaction.
     Execution { tx: L2Tx, fee_input: BatchFeeInput },
@@ -330,28 +329,6 @@ impl SandboxExecutor {
             .await
     }
 
-
-    pub async fn execute_txs_in_sandbox(
-        &self,
-        vm_permit: VmPermit,
-        execution_args: Vec<TxExecutionArgs>,
-        connection: Connection<'static, Core>,
-        action: SandboxAction,
-        block_args: BlockArgs,
-        state_override: Option<StateOverride>,
-    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
-        let (env, storage) =
-            self.prepare_env_and_storage(connection, &block_args,&action).await?;
-        let state_override = state_override.unwrap_or_default();
-        let storage = apply_state_override(storage, state_override);
-        let (_, tracing_params) = action.into_parts();
-        let res = self
-            .engine
-            .inspect_transactions_with_bytecode_compression(storage, env, execution_args,tracing_params)
-            .await;
-        drop(vm_permit);
-        res
-    }
     pub(super) async fn prepare_env_and_storage(
         &self,
         mut connection: Connection<'static, Core>,
