@@ -379,12 +379,10 @@ fn adjust_eth_sender_config(
 ) -> SenderConfig {
     if settlement_layer.is_gateway() {
         config.max_aggregated_tx_gas = 30000000000;
-        config.max_eth_tx_data_size = 550_000;
         tracing::warn!(
             "Settling to Gateway requires to adjust ETH sender configs: \
-               max_aggregated_tx_gas = {}, max_eth_tx_data_size = {}",
-            config.max_aggregated_tx_gas,
-            config.max_eth_tx_data_size
+               max_aggregated_tx_gas = {}",
+            config.max_aggregated_tx_gas
         );
         if config.pubdata_sending_mode == PubdataSendingMode::Blobs
             || config.pubdata_sending_mode == PubdataSendingMode::Calldata
@@ -401,14 +399,15 @@ fn adjust_eth_sender_config(
     config
 }
 
-// Get settlement layer based on ETH tx in the database.
+// Get settlement layer based on ETH tx in the database. We start on SL matching oldest unfinalized eth tx.
+// This due to BatchTransactionUpdater needing this SL to finalize that batch transaction.
 async fn get_db_settlement_mode(
     connection: &mut Connection<'_, Core>,
     l1chain_id: SLChainId,
 ) -> anyhow::Result<Option<SettlementLayer>> {
     let db_chain_id = connection
         .eth_sender_dal()
-        .get_chain_id_of_last_eth_tx()
+        .get_chain_id_of_oldest_unfinalized_eth_tx()
         .await?;
 
     Ok(db_chain_id.map(|chain_id| {

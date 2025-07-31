@@ -100,6 +100,8 @@ pub(super) const MSG_PREPARING_CONFIG_SPINNER: &str = "Preparing config files...
 pub(super) const MSG_DEPLOYING_ERC20_SPINNER: &str = "Deploying ERC20 contracts...";
 pub(super) const MSG_DEPLOYING_ECOSYSTEM_CONTRACTS_SPINNER: &str =
     "Deploying ecosystem contracts...";
+pub(super) const MSG_DEPLOYING_PROVING_NETWORKS_SPINNER: &str =
+    "Deploying proving networks contracts...";
 pub(super) const MSG_REGISTERING_CHAIN_SPINNER: &str = "Registering chain...";
 pub(super) const MSG_ACCEPTING_ADMIN_SPINNER: &str = "Accepting admin...";
 pub(super) const MSG_DA_PAIR_REGISTRATION_SPINNER: &str = "Registering DA pair...";
@@ -494,6 +496,8 @@ pub(super) const MSG_BELLMAN_CUDA_ORIGIN_SELECT: &str =
 pub(super) const MSG_BELLMAN_CUDA_SELECTION_CLONE: &str = "Clone for me (recommended)";
 pub(super) const MSG_BELLMAN_CUDA_SELECTION_PATH: &str = "I have the code already";
 pub(super) const MSG_SETUP_KEYS_PROMPT: &str = "Do you want to setup keys?";
+pub(super) const MSG_WVG_MODE_PROMPT: &str =
+    "Do you want simple WVG picking jobs mode or advanced one?";
 
 pub(super) fn msg_bucket_created(bucket_name: &str) -> String {
     format!("Bucket created successfully with url: gs://{bucket_name}")

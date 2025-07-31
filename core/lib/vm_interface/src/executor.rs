@@ -5,7 +5,13 @@ use std::fmt;
 use async_trait::async_trait;
 use zksync_types::{commitment::PubdataParams, l2::L2Tx, Transaction};
 
-use crate::{storage::{ReadStorage, StorageView}, tracer::{ValidationError, ValidationParams, ValidationTraces}, BatchTransactionExecutionResult, Call, FinishedL1Batch, L1BatchEnv, L2BlockEnv, OneshotEnv, OneshotTracingParams, OneshotTransactionExecutionResult, SystemEnv, TransactionExecutionMetrics, TxExecutionArgs, VmExecutionResultAndLogs};
+use crate::{
+    storage::{ReadStorage, StorageView},
+    tracer::{ValidationError, ValidationParams, ValidationTraces},
+    BatchTransactionExecutionResult, Call, FinishedL1Batch, L1BatchEnv, L2BlockEnv, OneshotEnv,
+    OneshotTracingParams, OneshotTransactionExecutionResult, SystemEnv,
+    TransactionExecutionMetrics, TxExecutionArgs, VmExecutionResultAndLogs,
+};
 
 /// Factory of [`BatchExecutor`]s.
 pub trait BatchExecutorFactory<S: Send + 'static>: 'static + Send + fmt::Debug {
@@ -39,6 +45,12 @@ pub trait BatchExecutor<S>: 'static + Send + fmt::Debug {
 
     /// Finished the current L1 batch.
     async fn finish_batch(self: Box<Self>) -> anyhow::Result<(FinishedL1Batch, StorageView<S>)>;
+
+    /// Rolls back the last executed l2 block.
+    async fn rollback_l2_block(&mut self) -> anyhow::Result<()>;
+
+    /// Commits the first uncommitted l2 block making so it cannot be rolled back anymore.
+    async fn commit_l2_block(&mut self) -> anyhow::Result<()>;
 }
 
 /// VM executor capable of executing isolated transactions / calls (as opposed to [batch execution](BatchExecutor)).

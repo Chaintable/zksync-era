@@ -1,17 +1,30 @@
 use anyhow::Context as _;
 use zksync_dal::{CoreDal, DalError};
-use zksync_multivm::interface::{Call, CallType, ExecutionResult, OneshotTracingParams, TxExecutionArgs};
+use zksync_multivm::interface::{
+    Call, CallType, ExecutionResult, OneshotTracingParams, TxExecutionArgs,
+};
 use zksync_system_constants::MAX_ENCODED_TX_SIZE;
-use zksync_types::{api::{
-    BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, DebugCall, DebugCallType,
-    ResultDebugCall, SupportedTracers, TracerConfig,
-}, debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat}, l2::L2Tx, transaction_request::CallRequest, web3, web3::Bytes, zk_evm_types::FarCallOpcode, H256, U256, U64};
-use zksync_types::api::{flat_call, Log, OpenEthActionTrace, PreError, PreResult, TransactionReceipt};
+use zksync_types::api::{
+    flat_call, Log, OpenEthActionTrace, PreError, PreResult, TransactionReceipt,
+};
+use zksync_types::{
+    api::{
+        BlockId, BlockNumber, CallTracerBlockResult, CallTracerConfig, CallTracerResult, DebugCall,
+        DebugCallType, ResultDebugCall, SupportedTracers, TracerConfig,
+    },
+    debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat},
+    l2::L2Tx,
+    transaction_request::CallRequest,
+    web3,
+    web3::Bytes,
+    zk_evm_types::FarCallOpcode,
+    H256, U256, U64,
+};
 use zksync_web3_decl::error::Web3Error;
 
 use crate::{
     execution_sandbox::SandboxAction,
-    web3::{backend_jsonrpsee::MethodTracer, state::RpcState},
+    web3::{backend_jsonrpsee::MethodTracer, namespaces::validate_gas_cap, state::RpcState},
 };
 
 #[derive(Debug, Clone)]
@@ -267,7 +280,11 @@ impl DebugNamespace {
         }
         let (call, call_meta) = call_trace.unwrap();
         let tx = tx.unwrap();
-        let CallTracerResult::CallTrace(call_trace) = Self::map_call(call, call_meta, TracerConfig::default()) else { todo!() };
+        let CallTracerResult::CallTrace(call_trace) =
+            Self::map_call(call, call_meta, TracerConfig::default())
+        else {
+            todo!()
+        };
         let call_trace_flat = flat_call(
             call_trace,
             tx.transaction_index.unwrap().as_usize(),
@@ -305,8 +322,24 @@ impl DebugNamespace {
                 .last_sealed_l2_block
                 .diff_with_block_args(&block_args),
         );
+
+        // Validate user-provided gas against the cap
+        validate_gas_cap(
+            &request,
+            block_id,
+            &block_args,
+            &mut connection,
+            self.state.api_config.eth_call_gas_cap,
+            self.current_method(),
+        )
+        .await?;
+
         if request.gas.is_none() {
-            request.gas = Some(block_args.default_eth_call_gas(&mut connection).await?);
+            request.gas = Some(
+                block_args
+                    .default_eth_call_gas(&mut connection, self.state.api_config.eth_call_gas_cap)
+                    .await?,
+            );
         }
 
         let fee_input = if block_args.resolves_to_latest_sealed_l2_block() {
@@ -422,6 +455,7 @@ impl DebugNamespace {
             .map_err(DalError::generalize)?;
         Ok(raw_txs_bytes.into_iter().map(Bytes::from).collect())
     }
+
     pub async fn debug_trace_get_log_impl(
         &self,
         mut request: CallRequest,
@@ -445,7 +479,11 @@ impl DebugNamespace {
                 .diff_with_block_args(&block_args),
         );
         if request.gas.is_none() {
-            request.gas = Some(block_args.default_eth_call_gas(&mut connection).await?);
+            request.gas = Some(
+                block_args
+                    .default_eth_call_gas(&mut connection, self.state.api_config.eth_call_gas_cap)
+                    .await?,
+            );
         }
         let fee_input = if block_args.resolves_to_latest_sealed_l2_block() {
             // It is important to drop a DB connection before calling the provider, since it acquires a connection internally
@@ -481,13 +519,7 @@ impl DebugNamespace {
             tracing_params: OneshotTracingParams::default(),
         };
         let result = executor
-            .execute_in_sandbox(
-                vm_permit,
-                connection,
-                action,
-                &block_args,
-                None,
-            )
+            .execute_in_sandbox(vm_permit, connection, action, &block_args, None)
             .await?;
         let mut logs = vec![];
         let mut transaction_log_index: u32 = 0;
@@ -495,7 +527,7 @@ impl DebugNamespace {
         let transaction_hash = H256::random();
         for event in result.events {
             logs.push(Log {
-                l1_batch_number: Some(event.location.0.0.into()),
+                l1_batch_number: Some(event.location.0 .0.into()),
                 address: event.address,
                 topics: event.indexed_topics,
                 data: event.value.into(),
@@ -535,6 +567,7 @@ impl DebugNamespace {
 
         Ok(receipt)
     }
+
     pub async fn debug_pre_trace_many_impl(
         &self,
         mut requests: Vec<CallRequest>,
@@ -542,6 +575,7 @@ impl DebugNamespace {
     ) -> Result<Vec<PreResult>, Web3Error> {
         let block_id = block_id.unwrap_or(BlockId::Number(BlockNumber::Latest));
         self.current_method().set_block_id(block_id);
+
         let mut connection = self.state.acquire_connection().await?;
         let call_overrides = requests[0].get_call_overrides()?;
         let block_args = self
@@ -572,7 +606,11 @@ impl DebugNamespace {
                 .last_sealed_l2_block
                 .diff_with_block_args(&block_args),
         );
-        let gas = Some(block_args.default_eth_call_gas(&mut connection).await?);
+        let gas = Some(
+            block_args
+                .default_eth_call_gas(&mut connection, self.state.api_config.eth_call_gas_cap)
+                .await?,
+        );
         for request in requests.iter_mut() {
             if request.gas.is_none() {
                 request.gas = gas.clone();
@@ -582,135 +620,277 @@ impl DebugNamespace {
             .into_iter()
             .map(|request| L2Tx::from_request(request.into(), MAX_ENCODED_TX_SIZE, false))
             .collect::<Result<Vec<_>, _>>()?;
-        let vm_permit = self
-            .state
-            .tx_sender
-            .vm_concurrency_limiter()
-            .acquire()
-            .await;
-        let vm_permit = vm_permit.context("cannot acquire VM permit")?;
+        // let vm_permit = self
+        //     .state
+        //     .tx_sender
+        //     .vm_concurrency_limiter()
+        //     .acquire()
+        //     .await;
+        // let vm_permit = vm_permit.context("cannot acquire VM permit")?;
         let executor = &self.state.tx_sender.0.executor;
-        let action = SandboxAction::Call {
-            call: txs[0].clone(),
-            fee_input: fee_input.clone(),
-            enforced_base_fee: call_overrides.enforced_base_fee,
-            tracing_params: OneshotTracingParams {
-                trace_calls: true,
-            },
-        };
-        let results = executor
-            .execute_txs_in_sandbox(
-                vm_permit,
-                txs.clone()
-                    .into_iter()
-                    .map(TxExecutionArgs::for_eth_call)
-                    .collect(),
-                connection,
-                action,
-                block_args.clone(),
-                None,
-            )
-            .await?;
-        let mut pre_res_vec = vec![];
-        if results.len() != txs.len() {
-            let pre_error = PreError {
-                msg: "Results count does not match requests count".to_string(),
-                code: 1000,
-            };
-            let pre_res = PreResult {
-                error: pre_error,
-                ..Default::default()
-            };
-            pre_res_vec.push(pre_res);
-            return Ok(pre_res_vec);
-        }
-        let mut tx_index = 0;
-        for ((result, calls), tx) in results.into_iter().zip(txs) {
-            let (output, revert_reason) = match result.result {
-                ExecutionResult::Success { output, .. } => (output, None),
-                ExecutionResult::Revert { output } => {
+        // let action = SandboxAction::Call {
+        //     call: txs[0].clone(),
+        //     fee_input: fee_input.clone(),
+        //     enforced_base_fee: call_overrides.enforced_base_fee,
+        //     tracing_params: OneshotTracingParams { trace_calls: true },
+        // };
+
+        let mut pre_res_vec = Vec::with_capacity(txs.len());
+        for (i, tx) in txs.iter().enumerate() {
+            let vm_permit = self
+                .state
+                .tx_sender
+                .vm_concurrency_limiter()
+                .acquire()
+                .await;
+            let vm_permit = match vm_permit {
+                Some(permit) => permit,
+                None => {
                     let pre_error = PreError {
-                        msg: output.to_string(),
-                        code: 1002,
-                    };
-                    let pre_res = PreResult {
-                        error: pre_error,
-                        ..Default::default()
-                    };
-                    pre_res_vec.push(pre_res);
-                    tx_index += 1;
-                    continue;
-                }
-                ExecutionResult::Halt { reason } => {
-                    let pre_error = PreError {
-                        msg: reason.to_string(),
+                        msg: format!("cannot acquire VM permit"),
                         code: 1000,
                     };
-                    let pre_res = PreResult {
+                    pre_res_vec.push(PreResult {
                         error: pre_error,
                         ..Default::default()
-                    };
-                    pre_res_vec.push(pre_res);
-                    tx_index += 1;
+                    });
                     continue;
                 }
             };
-            let gas_used = result.statistics.gas_used;
-            let mut logs = vec![];
-            let mut transaction_log_index: u32 = 0;
-            let transaction_hash = H256::random();
-            for log in result.logs.events {
-                logs.push(Log {
-                    l1_batch_number: Some(log.location.0.0.into()),
-                    address: log.address,
-                    topics: log.indexed_topics,
-                    data: log.value.into(),
-                    block_hash,
-                    block_timestamp: Some(0.into()),
-                    block_number: Some((block_args.resolved_block_number().0 as u64).into()),
-                    transaction_hash: Some(transaction_hash),
-                    transaction_index: Some(tx_index.into()),
-                    log_index: Some(transaction_log_index.into()),
-                    transaction_log_index: Some(transaction_log_index.into()),
-                    log_type: None,
-                    removed: Some(false),
-                });
-                transaction_log_index += 1;
+            let result = executor
+                .execute_in_sandbox(
+                    vm_permit,
+                    self.state.acquire_connection().await?,
+                    SandboxAction::Call {
+                        call: tx.clone(),
+                        fee_input: fee_input.clone(),
+                        enforced_base_fee: call_overrides.enforced_base_fee,
+                        tracing_params: OneshotTracingParams { trace_calls: true },
+                    },
+                    &block_args,
+                    None,
+                )
+                .await;
+
+            match result {
+                Ok(result) => {
+                    let (output, revert_reason) = match result.result {
+                        ExecutionResult::Success { output, .. } => (output, None),
+                        ExecutionResult::Revert { output } => {
+                            let pre_error = PreError {
+                                msg: output.to_string(),
+                                code: 1002,
+                            };
+                            let pre_res = PreResult {
+                                error: pre_error,
+                                ..Default::default()
+                            };
+                            pre_res_vec.push(pre_res);
+                            continue;
+                        }
+                        ExecutionResult::Halt { reason } => {
+                            let pre_error = PreError {
+                                msg: reason.to_string(),
+                                code: 1000,
+                            };
+                            pre_res_vec.push(PreResult {
+                                error: pre_error,
+                                ..Default::default()
+                            });
+                            continue;
+                        }
+                    };
+                    let call = Call::new_high_level(
+                        tx.common_data.fee.gas_limit.as_u64(),
+                        result.metrics.vm.gas_used as u64,
+                        tx.execute.value,
+                        tx.execute.calldata.clone(),
+                        output,
+                        revert_reason,
+                        result.call_traces,
+                    );
+                    let number = block_args.resolved_block_number();
+                    let meta = CallTraceMeta {
+                        block_number: number.0,
+                        ..Default::default()
+                    };
+
+                    let flat_trace = Self::map_call(
+                        call,
+                        meta,
+                        TracerConfig {
+                            tracer: SupportedTracers::FlatCallTracer,
+                            tracer_config: CallTracerConfig {
+                                only_top_call: false,
+                            },
+                        },
+                    );
+
+                    let gas_used = result.metrics.vm.gas_used as u64;
+                    let mut logs = vec![];
+                    let mut log_index: u32 = 0;
+                    let transaction_hash = H256::random();
+                    for log in result.events {
+                        logs.push(Log {
+                            l1_batch_number: Some(log.location.0 .0.into()),
+                            address: log.address,
+                            topics: log.indexed_topics,
+                            data: log.value.into(),
+                            block_hash,
+                            block_timestamp: Some(0.into()),
+                            block_number: Some(
+                                (block_args.resolved_block_number().0 as u64).into(),
+                            ),
+                            transaction_hash: Some(transaction_hash),
+                            transaction_index: Some(i.into()),
+                            log_index: Some(log_index.into()),
+                            transaction_log_index: Some(log_index.into()),
+                            log_type: None,
+                            removed: Some(false),
+                        });
+                        log_index += 1;
+                    }
+
+                    let pre_res = PreResult {
+                        trace: flat_trace.unwrap_flat(),
+                        logs,
+                        gas_used: gas_used.into(),
+                        error: Default::default(),
+                    };
+
+                    pre_res_vec.push(pre_res);
+                }
+                Err(e) => {
+                    let pre_error = PreError {
+                        msg: format!("Sandbox execution error: {e}"),
+                        code: 1000,
+                    };
+                    pre_res_vec.push(PreResult {
+                        error: pre_error,
+                        ..Default::default()
+                    });
+                }
             }
-            let call = Call::new_high_level(
-                tx.common_data.fee.gas_limit.as_u64(),
-                result.statistics.gas_used,
-                tx.execute.value,
-                tx.execute.calldata,
-                output,
-                revert_reason,
-                calls,
-            );
-            let call_meta = CallTraceMeta {
-                index_in_block: tx_index,
-                tx_hash: transaction_hash,
-                block_number: block_args.resolved_block_number().0,
-                block_hash: block_hash.unwrap_or_default(),
-                internal_error: None,
-            };
-            let CallTracerResult::CallTrace(call_trace) = Self::map_call(call, call_meta, TracerConfig::default()) else { todo!() };
-            let res = flat_call(
-                call_trace,
-                tx_index,
-                transaction_hash,
-                block_args.resolved.state_l2_block_number().0 as u64,
-                block_hash.unwrap_or_default(),
-                &mut Vec::new(),
-            );
-            let pre_res = PreResult {
-                trace: res,
-                logs,
-                gas_used: gas_used.into(),
-                error: Default::default(),
-            };
-            tx_index += 1;
-            pre_res_vec.push(pre_res);
         }
-        Ok(pre_res_vec)
+        return Ok(pre_res_vec);
+
+        //     let results = executor
+        //         .execute_txs_in_sandbox(
+        //             vm_permit,
+        //             txs.clone()
+        //                 .into_iter()
+        //                 .map(TxExecutionArgs::for_eth_call)
+        //                 .collect(),
+        //             connection,
+        //             action,
+        //             block_args.clone(),
+        //             None,
+        //         )
+        //         .await?;
+        //     let mut pre_res_vec = vec![];
+        //     if results.len() != txs.len() {
+        //         let pre_error = PreError {
+        //             msg: "Results count does not match requests count".to_string(),
+        //             code: 1000,
+        //         };
+        //         let pre_res = PreResult {
+        //             error: pre_error,
+        //             ..Default::default()
+        //         };
+        //         pre_res_vec.push(pre_res);
+        //         return Ok(pre_res_vec);
+        //     }
+        //     let mut tx_index = 0;
+        //     for ((result, calls), tx) in results.into_iter().zip(txs) {
+        //         let (output, revert_reason) = match result.result {
+        //             ExecutionResult::Success { output, .. } => (output, None),
+        //             ExecutionResult::Revert { output } => {
+        //                 let pre_error = PreError {
+        //                     msg: output.to_string(),
+        //                     code: 1002,
+        //                 };
+        //                 let pre_res = PreResult {
+        //                     error: pre_error,
+        //                     ..Default::default()
+        //                 };
+        //                 pre_res_vec.push(pre_res);
+        //                 tx_index += 1;
+        //                 continue;
+        //             }
+        //             ExecutionResult::Halt { reason } => {
+        //                 let pre_error = PreError {
+        //                     msg: reason.to_string(),
+        //                     code: 1000,
+        //                 };
+        //                 let pre_res = PreResult {
+        //                     error: pre_error,
+        //                     ..Default::default()
+        //                 };
+        //                 pre_res_vec.push(pre_res);
+        //                 tx_index += 1;
+        //                 continue;
+        //             }
+        //         };
+        //         let gas_used = result.statistics.gas_used;
+        //         let mut logs = vec![];
+        //         let mut transaction_log_index: u32 = 0;
+        //         let transaction_hash = H256::random();
+        //         for log in result.logs.events {
+        //             logs.push(Log {
+        //                 l1_batch_number: Some(log.location.0 .0.into()),
+        //                 address: log.address,
+        //                 topics: log.indexed_topics,
+        //                 data: log.value.into(),
+        //                 block_hash,
+        //                 block_timestamp: Some(0.into()),
+        //                 block_number: Some((block_args.resolved_block_number().0 as u64).into()),
+        //                 transaction_hash: Some(transaction_hash),
+        //                 transaction_index: Some(tx_index.into()),
+        //                 log_index: Some(transaction_log_index.into()),
+        //                 transaction_log_index: Some(transaction_log_index.into()),
+        //                 log_type: None,
+        //                 removed: Some(false),
+        //             });
+        //             transaction_log_index += 1;
+        //         }
+        //         let call = Call::new_high_level(
+        //             tx.common_data.fee.gas_limit.as_u64(),
+        //             result.statistics.gas_used,
+        //             tx.execute.value,
+        //             tx.execute.calldata,
+        //             output,
+        //             revert_reason,
+        //             calls,
+        //         );
+        //         let call_meta = CallTraceMeta {
+        //             index_in_block: tx_index,
+        //             tx_hash: transaction_hash,
+        //             block_number: block_args.resolved_block_number().0,
+        //             block_hash: block_hash.unwrap_or_default(),
+        //             internal_error: None,
+        //         };
+        //         let CallTracerResult::CallTrace(call_trace) =
+        //             Self::map_call(call, call_meta, TracerConfig::default())
+        //         else {
+        //             todo!()
+        //         };
+        //         let res = flat_call(
+        //             call_trace,
+        //             tx_index,
+        //             transaction_hash,
+        //             block_args.resolved.state_l2_block_number().0 as u64,
+        //             block_hash.unwrap_or_default(),
+        //             &mut Vec::new(),
+        //         );
+        //         let pre_res = PreResult {
+        //             trace: res,
+        //             logs,
+        //             gas_used: gas_used.into(),
+        //             error: Default::default(),
+        //         };
+        //         tx_index += 1;
+        //         pre_res_vec.push(pre_res);
+        //     }
+        //     Ok(pre_res_vec)
     }
 }

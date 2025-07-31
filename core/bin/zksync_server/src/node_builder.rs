@@ -7,18 +7,22 @@ use anyhow::{bail, Context};
 use zksync_base_token_adjuster::node::{
     BaseTokenRatioPersisterLayer, BaseTokenRatioProviderLayer, ExternalPriceApiLayer,
 };
-use zksync_circuit_breaker::node::CircuitBreakerCheckerLayer;
+use zksync_circuit_breaker::node::{CircuitBreakerCheckerLayer, ReplicationLagCheckerLayer};
 use zksync_commitment_generator::node::{
     CommitmentGeneratorLayer, L1BatchCommitmentModeValidationLayer,
 };
 use zksync_config::{
     configs::{
+        api::Namespace,
         consensus::ConsensusConfig,
         contracts::{
-            chain::L2Contracts, ecosystem::L1SpecificContracts, SettlementLayerSpecificContracts,
+            chain::{L2Contracts, ProofManagerContracts},
+            ecosystem::L1SpecificContracts,
+            SettlementLayerSpecificContracts,
         },
         da_client::DAClientConfig,
         secrets::DataAvailabilitySecrets,
+        snapshot_recovery::TreeRecoveryConfig,
         wallets::Wallets,
         GeneralConfig, Secrets,
     },
@@ -35,6 +39,7 @@ use zksync_eth_client::{
     node::{BridgeAddressesUpdaterLayer, PKSigningEthClientLayer},
     web3_decl::node::QueryEthClientLayer,
 };
+use zksync_eth_proof_manager::node::EthProofManagerLayer;
 use zksync_eth_sender::node::{EthTxAggregatorLayer, EthTxManagerLayer};
 use zksync_eth_watch::node::EthWatchLayer;
 use zksync_external_proof_integration_api::node::ExternalProofIntegrationApiLayer;
@@ -52,7 +57,7 @@ use zksync_node_api_server::{
         WhitelistedMasterPoolSinkLayer,
     },
     tx_sender::TxSenderConfig,
-    web3::{state::InternalApiConfigBase, Namespace},
+    web3::state::InternalApiConfigBase,
 };
 use zksync_node_consensus::node::MainNodeConsensusLayer;
 use zksync_node_fee_model::node::{GasAdjusterLayer, L1GasLayer};
@@ -70,7 +75,7 @@ use zksync_tee_proof_data_handler::node::TeeProofDataHandlerLayer;
 use zksync_types::{
     commitment::{L1BatchCommitmentMode, PubdataType},
     pubdata_da::PubdataSendingMode,
-    Address, SHARED_BRIDGE_ETHER_TOKEN_ADDRESS,
+    Address,
 };
 use zksync_vlog::node::{PrometheusExporterLayer, SigintHandlerLayer};
 use zksync_vm_runner::node::{
@@ -100,6 +105,7 @@ pub(crate) struct MainNodeBuilder {
     // if use pre v26 contracts and not all functions are available for loading contracts
     pub l1_sl_contracts: Option<SettlementLayerSpecificContracts>,
     pub l2_contracts: L2Contracts,
+    pub eth_proof_manager_contracts: Option<ProofManagerContracts>,
     pub multicall3: Option<Address>,
 }
 
@@ -129,7 +135,7 @@ impl MainNodeBuilder {
 
     fn add_pools_layer(mut self) -> anyhow::Result<Self> {
         let config = self.configs.postgres_config.clone();
-        let secrets = self.secrets.database.clone();
+        let secrets = self.secrets.postgres.clone();
         let pools_layer = PoolsLayer::empty(config, secrets)
             .with_master(true)
             .with_replica(true);
@@ -191,14 +197,16 @@ impl MainNodeBuilder {
     }
 
     fn add_l1_gas_layer(mut self) -> anyhow::Result<Self> {
-        // Ensure the BaseTokenRatioProviderResource is inserted if the base token is not ETH.
-        if self.l1_specific_contracts.base_token_address != SHARED_BRIDGE_ETHER_TOKEN_ADDRESS {
-            let base_token_adjuster_config = self.configs.base_token_adjuster.clone();
-            self.node
-                .add_layer(BaseTokenRatioProviderLayer::new(base_token_adjuster_config));
-        }
+        // We always insert base token ratio persister as its needed for all chains on gateway
+        let base_token_adjuster_config = self.configs.base_token_adjuster.clone();
+        self.node
+            .add_layer(BaseTokenRatioProviderLayer::new(base_token_adjuster_config));
         let state_keeper_config = try_load_config!(self.configs.state_keeper_config);
-        let l1_gas_layer = L1GasLayer::new(&state_keeper_config);
+        let api_config = try_load_config!(self.configs.api_config);
+        let l1_gas_layer = L1GasLayer::new(
+            &state_keeper_config,
+            api_config.web3_json_rpc.gas_price_scale_factor_open_batch,
+        );
         self.node.add_layer(l1_gas_layer);
         Ok(self)
     }
@@ -219,13 +227,12 @@ impl MainNodeBuilder {
     }
 
     fn add_metadata_calculator_layer(mut self, with_tree_api: bool) -> anyhow::Result<Self> {
-        let merkle_tree_env_config = self.configs.db_config.merkle_tree.clone();
-        let operations_manager_env_config = self.configs.operations_manager_config.clone();
-        let state_keeper_env_config = try_load_config!(self.configs.state_keeper_config);
-        let metadata_calculator_config = MetadataCalculatorConfig::for_main_node(
-            &merkle_tree_env_config,
-            &operations_manager_env_config,
-            &state_keeper_env_config,
+        let merkle_tree_config = self.configs.db_config.merkle_tree.clone();
+        let state_keeper_config = try_load_config!(self.configs.state_keeper_config).shared;
+        let metadata_calculator_config = MetadataCalculatorConfig::from_configs(
+            &merkle_tree_config,
+            &state_keeper_config,
+            &TreeRecoveryConfig::default(), // Tree recovery is not relevant for the main node
         );
         let mut layer = MetadataCalculatorLayer::new(metadata_calculator_config);
         if with_tree_api {
@@ -241,10 +248,11 @@ impl MainNodeBuilder {
         const OPTIONAL_BYTECODE_COMPRESSION: bool = false;
 
         let sk_config = try_load_config!(self.configs.state_keeper_config);
-        let persistence_layer = OutputHandlerLayer::new(sk_config.l2_block_seal_queue_capacity)
-            .with_protective_reads_persistence_enabled(
-                sk_config.protective_reads_persistence_enabled,
-            );
+        let persistence_layer =
+            OutputHandlerLayer::new(sk_config.shared.l2_block_seal_queue_capacity)
+                .with_protective_reads_persistence_enabled(
+                    sk_config.shared.protective_reads_persistence_enabled,
+                );
         let mempool_io_layer = MempoolIOLayer::new(
             self.genesis_config.l2_chain_id,
             sk_config.clone(),
@@ -254,9 +262,11 @@ impl MainNodeBuilder {
         );
         let db_config = self.configs.db_config.clone();
         let experimental_vm_config = self.configs.experimental_vm_config.clone();
-        let main_node_batch_executor_builder_layer =
-            MainBatchExecutorLayer::new(sk_config.save_call_traces, OPTIONAL_BYTECODE_COMPRESSION)
-                .with_fast_vm_mode(experimental_vm_config.state_keeper_fast_vm_mode);
+        let main_node_batch_executor_builder_layer = MainBatchExecutorLayer::new(
+            sk_config.shared.save_call_traces,
+            OPTIONAL_BYTECODE_COMPRESSION,
+        )
+        .with_fast_vm_mode(experimental_vm_config.state_keeper_fast_vm_mode);
 
         let rocksdb_options = RocksdbStorageOptions {
             block_cache_capacity: db_config
@@ -272,6 +282,16 @@ impl MainNodeBuilder {
             .add_layer(mempool_io_layer)
             .add_layer(main_node_batch_executor_builder_layer)
             .add_layer(state_keeper_layer);
+        Ok(self)
+    }
+
+    fn add_eth_proof_manager_layer(mut self) -> anyhow::Result<Self> {
+        self.node.add_layer(EthProofManagerLayer::new(
+            self.configs.eth_proof_manager.clone(),
+            self.eth_proof_manager_contracts
+                .clone()
+                .expect("Eth proof manager contracts are required to run eth proof manager"),
+        ));
         Ok(self)
     }
 
@@ -405,90 +425,70 @@ impl MainNodeBuilder {
         Ok(self)
     }
 
-    fn add_http_web3_api_layer(mut self) -> anyhow::Result<Self> {
+    fn create_api_config(
+        &self,
+    ) -> anyhow::Result<(InternalApiConfigBase, Web3ServerOptionalConfig)> {
         let rpc_config = try_load_config!(self.configs.api_config).web3_json_rpc;
         let state_keeper_config = try_load_config!(self.configs.state_keeper_config);
-        let with_debug_namespace = state_keeper_config.save_call_traces;
 
-        let mut namespaces = if let Some(namespaces) = &rpc_config.api_namespaces {
-            namespaces
-                .iter()
-                .map(|a| a.parse())
-                .collect::<Result<_, _>>()?
-        } else {
-            Namespace::DEFAULT.to_vec()
-        };
-        if with_debug_namespace {
-            namespaces.push(Namespace::Debug)
+        // TODO(PLA-1153): Make the node do what the config says
+        let mut namespaces = rpc_config.api_namespaces.clone();
+        if state_keeper_config.shared.save_call_traces {
+            namespaces.insert(Namespace::Debug);
         }
-        namespaces.push(Namespace::Snapshots);
+        namespaces.insert(Namespace::Snapshots);
 
         let optional_config = Web3ServerOptionalConfig {
-            namespaces: Some(namespaces),
-            filters_limit: Some(rpc_config.filters_limit),
-            subscriptions_limit: Some(rpc_config.subscriptions_limit),
-            batch_request_size_limit: Some(rpc_config.max_batch_request_size),
-            response_body_size_limit: Some(rpc_config.max_response_body_size()),
+            namespaces,
+            filters_limit: rpc_config.filters_limit,
+            subscriptions_limit: rpc_config.subscriptions_limit,
+            batch_request_size_limit: rpc_config.max_batch_request_size.get(),
+            response_body_size_limit: rpc_config.max_response_body_size(),
+            websocket_requests_per_minute_limit: Some(
+                rpc_config.websocket_requests_per_minute_limit,
+            ),
             request_timeout: rpc_config.request_timeout,
             with_extended_tracing: rpc_config.extended_api_tracing,
-            ..Default::default()
+            // Pruning isn't supposed to be enabled for the main node at the moment, but we use a reasonable value just in case.
+            pruning_info_refresh_interval: Duration::from_secs(10),
+            polling_interval: rpc_config.pubsub_polling_interval,
         };
-        let http_port = rpc_config.http_port;
-        let internal_config_base = InternalApiConfigBase::new(&self.genesis_config, &rpc_config)
+        let base = InternalApiConfigBase::new(&self.genesis_config, &rpc_config)
             .with_l1_to_l2_txs_paused(self.configs.mempool_config.l1_to_l2_txs_paused);
+        Ok((base, optional_config))
+    }
 
+    fn add_http_web3_api_layer(mut self) -> anyhow::Result<Self> {
+        let (internal_config_base, mut optional_config) = self.create_api_config()?;
+        // Not relevant for HTTP server, so we reset to prevent a logged warning.
+        optional_config.websocket_requests_per_minute_limit = None;
+
+        let api = self
+            .configs
+            .api_config
+            .as_ref()
+            .context("self.configs.api_config")?;
         self.node.add_layer(Web3ServerLayer::http(
-            http_port,
+            api.web3_json_rpc.http_port,
             internal_config_base,
             optional_config,
         ));
-
         Ok(self)
     }
 
     fn add_ws_web3_api_layer(mut self) -> anyhow::Result<Self> {
-        let rpc_config = try_load_config!(self.configs.api_config).web3_json_rpc;
-        let state_keeper_config = try_load_config!(self.configs.state_keeper_config);
-        let circuit_breaker_config = &self.configs.circuit_breaker_config;
-        let with_debug_namespace = state_keeper_config.save_call_traces;
+        let (internal_config_base, optional_config) = self.create_api_config()?;
 
-        let mut namespaces = if let Some(namespaces) = &rpc_config.api_namespaces {
-            namespaces
-                .iter()
-                .map(|a| a.parse())
-                .collect::<Result<_, _>>()?
-        } else {
-            Namespace::DEFAULT.to_vec()
-        };
-        if with_debug_namespace {
-            namespaces.push(Namespace::Debug)
-        }
-        namespaces.push(Namespace::Snapshots);
-
-        let optional_config = Web3ServerOptionalConfig {
-            namespaces: Some(namespaces),
-            filters_limit: Some(rpc_config.filters_limit),
-            subscriptions_limit: Some(rpc_config.subscriptions_limit),
-            batch_request_size_limit: Some(rpc_config.max_batch_request_size),
-            response_body_size_limit: Some(rpc_config.max_response_body_size()),
-            websocket_requests_per_minute_limit: Some(
-                rpc_config.websocket_requests_per_minute_limit,
-            ),
-            replication_lag_limit: circuit_breaker_config.replication_lag_limit,
-            request_timeout: rpc_config.request_timeout,
-            with_extended_tracing: rpc_config.extended_api_tracing,
-            ..Default::default()
-        };
-        let ws_port = rpc_config.ws_port;
-        let internal_config_base = InternalApiConfigBase::new(&self.genesis_config, &rpc_config)
-            .with_l1_to_l2_txs_paused(self.configs.mempool_config.l1_to_l2_txs_paused);
-
+        let api = self
+            .configs
+            .api_config
+            .as_ref()
+            .context("self.configs.api_config")?;
         self.node.add_layer(Web3ServerLayer::ws(
-            ws_port,
+            api.web3_json_rpc.ws_port,
             internal_config_base,
             optional_config,
         ));
-
         Ok(self)
     }
 
@@ -525,6 +525,14 @@ impl MainNodeBuilder {
         self.node
             .add_layer(CircuitBreakerCheckerLayer(circuit_breaker_config));
 
+        Ok(self)
+    }
+
+    fn add_replication_lag_checker_layer(mut self) -> anyhow::Result<Self> {
+        let circuit_breaker_config = &self.configs.circuit_breaker_config;
+        self.node.add_layer(ReplicationLagCheckerLayer {
+            replication_lag_limit: circuit_breaker_config.replication_lag_limit,
+        });
         Ok(self)
     }
 
@@ -754,9 +762,12 @@ impl MainNodeBuilder {
         });
 
         if components.contains(&Component::EthTxAggregator)
-            | components.contains(&Component::EthTxManager)
+            || components.contains(&Component::EthTxManager)
         {
             self = self.add_pk_signing_client_layer()?;
+        }
+        if components.contains(&Component::HttpApi) || components.contains(&Component::WsApi) {
+            self = self.add_replication_lag_checker_layer()?;
         }
 
         // Add "component-specific" layers.
@@ -806,6 +817,9 @@ impl MainNodeBuilder {
                         "Merkle tree API cannot be started without a tree component"
                     );
                     // Do nothing, will be handled by the `Tree` component.
+                }
+                Component::EthProofManager => {
+                    self = self.add_eth_proof_manager_layer()?;
                 }
                 Component::EthWatcher => {
                     self = self.add_eth_watch_layer()?;

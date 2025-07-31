@@ -7,7 +7,7 @@ use zksync_types::{
         TransactionDetailedResult, TransactionExecutionInfo,
     },
     tee_types::TeeType,
-    L1BatchNumber, L2ChainId, H256, U256,
+    L1BatchNumber, L2BlockNumber, L2ChainId, H256,
 };
 
 use crate::{
@@ -45,6 +45,13 @@ pub trait UnstableNamespace {
         chain_id: L2ChainId,
     ) -> RpcResult<Option<ChainAggProof>>;
 
+    #[method(name = "getChainLogProofUntilMsgRoot")]
+    async fn get_chain_log_proof_until_msg_root(
+        &self,
+        block_number: L2BlockNumber,
+        chain_id: L2ChainId,
+    ) -> RpcResult<Option<ChainAggProof>>;
+
     #[method(name = "unconfirmedTxsCount")]
     async fn get_unconfirmed_txs_count(&self) -> RpcResult<usize>;
 
@@ -68,7 +75,4 @@ pub trait UnstableNamespace {
         &self,
         tx_bytes: Bytes,
     ) -> RpcResult<TransactionDetailedResult>;
-
-    #[method(name = "gasPerPubdata")]
-    async fn gas_per_pubdata(&self) -> RpcResult<U256>;
 }
