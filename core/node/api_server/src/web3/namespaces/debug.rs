@@ -47,6 +47,9 @@ impl DebugNamespace {
             SupportedTracers::FlatCallTracer => {
                 let mut calls = vec![];
                 let mut traces = vec![meta.index_in_block];
+                if tracer_option.tracer_config.independent_tx_trace {
+                    traces = vec![];
+                }
                 Self::flatten_call(
                     call,
                     &mut calls,
@@ -587,8 +590,12 @@ impl DebugNamespace {
                         result.call_traces,
                     );
                     let number = block_args.resolved_block_number();
+                    let transaction_hash = H256::random();
                     let meta = CallTraceMeta {
                         block_number: number.0,
+                        block_hash: block_hash.unwrap_or_default(),
+                        tx_hash: transaction_hash,
+                        index_in_block: i,
                         ..Default::default()
                     };
 
@@ -599,6 +606,7 @@ impl DebugNamespace {
                             tracer: SupportedTracers::FlatCallTracer,
                             tracer_config: CallTracerConfig {
                                 only_top_call: false,
+                                independent_tx_trace: true,
                             },
                         },
                     );
@@ -606,7 +614,6 @@ impl DebugNamespace {
                     let gas_used = result.metrics.vm.gas_used as u64;
                     let mut logs = vec![];
                     let mut log_index: u32 = 0;
-                    let transaction_hash = H256::random();
                     for log in result.events {
                         logs.push(Log {
                             l1_batch_number: Some(log.location.0 .0.into()),

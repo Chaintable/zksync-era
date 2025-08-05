@@ -888,6 +888,7 @@ pub enum SupportedTracers {
 #[serde(rename_all = "camelCase")]
 pub struct CallTracerConfig {
     pub only_top_call: bool,
+    pub independent_tx_trace: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -904,6 +905,7 @@ impl Default for TracerConfig {
             tracer: SupportedTracers::CallTracer,
             tracer_config: CallTracerConfig {
                 only_top_call: false,
+                independent_tx_trace: false,
             },
         }
     }
