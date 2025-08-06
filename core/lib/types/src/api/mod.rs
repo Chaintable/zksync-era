@@ -721,7 +721,8 @@ pub struct ResultDebugCall {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "camelCase")]
+//#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "lowercase")]
 pub enum DebugCallType {
     #[default]
     Call,
