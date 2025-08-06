@@ -5,8 +5,8 @@ use zksync_system_constants::MAX_ENCODED_TX_SIZE;
 use zksync_types::api::{flat_call, Log, OpenEthActionTrace, PreError, PreResult};
 use zksync_types::{
     api::{
-        BlockId, BlockNumber, CallTracerBlockResult, CallTracerConfig, CallTracerResult, DebugCall,
-        DebugCallType, ResultDebugCall, SupportedTracers, TracerConfig,
+        BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, DebugCall, DebugCallType,
+        ResultDebugCall, SupportedTracers, TracerConfig,
     },
     debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat},
     l2::L2Tx,
@@ -507,13 +507,6 @@ impl DebugNamespace {
             .into_iter()
             .map(|request| L2Tx::from_request(request.into(), MAX_ENCODED_TX_SIZE, false))
             .collect::<Result<Vec<_>, _>>()?;
-        // let vm_permit = self
-        //     .state
-        //     .tx_sender
-        //     .vm_concurrency_limiter()
-        //     .acquire()
-        //     .await;
-        // let vm_permit = vm_permit.context("cannot acquire VM permit")?;
         let executor = &self.state.tx_sender.0.executor;
         let mut pre_res_vec = Vec::with_capacity(txs.len());
         for (i, tx) in txs.iter().enumerate() {
@@ -599,16 +592,18 @@ impl DebugNamespace {
                         ..Default::default()
                     };
 
-                    let flat_trace = Self::map_call(
-                        call,
-                        meta,
-                        TracerConfig {
-                            tracer: SupportedTracers::FlatCallTracer,
-                            tracer_config: CallTracerConfig {
-                                only_top_call: false,
-                                independent_tx_trace: true,
-                            },
-                        },
+                    let CallTracerResult::CallTrace(call_trace) =
+                        Self::map_call(call, meta, TracerConfig::default())
+                    else {
+                        todo!()
+                    };
+                    let flat_trace = flat_call(
+                        call_trace,
+                        i,
+                        transaction_hash,
+                        number.0 as u64,
+                        block_hash.unwrap_or_default(),
+                        &mut Vec::new(),
                     );
 
                     let gas_used = result.metrics.vm.gas_used as u64;
@@ -636,7 +631,7 @@ impl DebugNamespace {
                     }
 
                     let pre_res = PreResult {
-                        trace: flat_trace.unwrap_flat(),
+                        trace: flat_trace,
                         logs,
                         gas_used: gas_used.into(),
                         error: Default::default(),

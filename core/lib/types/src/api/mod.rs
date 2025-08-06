@@ -721,8 +721,7 @@ pub struct ResultDebugCall {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
-//#[serde(rename_all = "camelCase")]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub enum DebugCallType {
     #[default]
     Call,
@@ -1388,8 +1387,7 @@ pub struct PreError {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct PreResult {
-    //pub trace: Vec<OpenEthActionTrace>,
-    pub trace: Vec<DebugCallFlat>,
+    pub trace: Vec<OpenEthActionTrace>,
     pub logs: Vec<Log>,
     pub error: PreError,
     #[serde(rename = "gasUsed")]
