@@ -1,8 +1,13 @@
 use anyhow::Context as _;
+use std::collections::HashMap;
 use zksync_dal::{CoreDal, DalError};
 use zksync_multivm::interface::{Call, CallType, ExecutionResult, OneshotTracingParams};
 use zksync_system_constants::MAX_ENCODED_TX_SIZE;
 use zksync_types::api::{flat_call, Log, OpenEthActionTrace, PreError, PreResult};
+use zksync_types::{
+    api::state_override::{OverrideAccount, OverrideState, StateOverride},
+    StorageLog,
+};
 use zksync_types::{
     api::{
         BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, DebugCall, DebugCallType,
@@ -14,7 +19,7 @@ use zksync_types::{
     web3,
     web3::Bytes,
     zk_evm_types::FarCallOpcode,
-    H256, U256,
+    Address, H256, U256,
 };
 use zksync_web3_decl::error::Web3Error;
 
@@ -455,6 +460,74 @@ impl DebugNamespace {
         Ok(raw_txs_bytes.into_iter().map(Bytes::from).collect())
     }
 
+    pub fn state_override_from_write_logs(write_logs: &[StorageLog]) -> StateOverride {
+        // address -> (slot -> value)
+        let mut per_account: HashMap<Address, HashMap<H256, H256>> = HashMap::new();
+
+        for log in write_logs {
+            let address = *log.key.address();
+            let slot = *log.key.key();
+            let value = log.value;
+
+            per_account.entry(address).or_default().insert(slot, value);
+        }
+
+        let accounts = per_account
+            .into_iter()
+            .map(|(addr, slots)| {
+                let account = OverrideAccount {
+                    state: Some(OverrideState::StateDiff(slots)),
+                    ..OverrideAccount::default()
+                };
+                (addr, account)
+            })
+            .collect::<HashMap<_, _>>();
+
+        StateOverride::new(accounts)
+    }
+
+    fn merge_state_overrides(acc: StateOverride, next: StateOverride) -> StateOverride {
+        let mut map: HashMap<Address, OverrideAccount> = acc.into_iter().collect();
+        for (addr, mut next_acc) in next.into_iter() {
+            let mut merged = map.remove(&addr).unwrap_or_else(OverrideAccount::default);
+            if let Some(balance) = next_acc.balance.take() {
+                merged.balance = Some(balance);
+            }
+            if let Some(nonce) = next_acc.nonce.take() {
+                merged.nonce = Some(nonce);
+            }
+            if let Some(code) = next_acc.code.take() {
+                merged.code = Some(code);
+            }
+            match (merged.state.take(), next_acc.state.take()) {
+                (Some(OverrideState::StateDiff(mut a)), Some(OverrideState::StateDiff(b))) => {
+                    a.extend(b);
+                    merged.state = Some(OverrideState::StateDiff(a));
+                }
+                (Some(OverrideState::State(mut a)), Some(OverrideState::StateDiff(b))) => {
+                    a.extend(b);
+                    merged.state = Some(OverrideState::State(a));
+                }
+                (Some(OverrideState::State(_)), Some(OverrideState::State(b))) => {
+                    merged.state = Some(OverrideState::State(b));
+                }
+                (Some(OverrideState::StateDiff(_)), Some(OverrideState::State(b))) => {
+                    merged.state = Some(OverrideState::State(b));
+                }
+                (None, Some(b)) => {
+                    merged.state = Some(b);
+                }
+                (Some(a), None) => {
+                    merged.state = Some(a);
+                }
+                (None, None) => {}
+            }
+
+            map.insert(addr, merged);
+        }
+        StateOverride::new(map)
+    }
+
     pub async fn debug_pre_trace_many_impl(
         &self,
         mut requests: Vec<CallRequest>,
@@ -509,6 +582,7 @@ impl DebugNamespace {
             .collect::<Result<Vec<_>, _>>()?;
         let executor = &self.state.tx_sender.0.executor;
         let mut pre_res_vec = Vec::with_capacity(txs.len());
+        let mut accumulated_override: Option<StateOverride> = None;
         for (i, tx) in txs.iter().enumerate() {
             let vm_permit = self
                 .state
@@ -541,12 +615,17 @@ impl DebugNamespace {
                         tracing_params: OneshotTracingParams { trace_calls: true },
                     },
                     &block_args,
-                    None,
+                    accumulated_override.clone(),
                 )
                 .await;
 
             match result {
                 Ok(result) => {
+                    let next_override = Self::state_override_from_write_logs(&result.write_logs);
+                    accumulated_override = Some(match accumulated_override.take() {
+                        None => next_override,
+                        Some(acc) => Self::merge_state_overrides(acc, next_override),
+                    });
                     let (output, revert_reason) = match result.result {
                         ExecutionResult::Success { output, .. } => (output, None),
                         ExecutionResult::Revert { output } => {
