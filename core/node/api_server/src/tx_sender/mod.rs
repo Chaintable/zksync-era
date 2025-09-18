@@ -1,7 +1,6 @@
 //! Helper module to submit transactions into the ZKsync Network.
 
 use std::{
-    collections::HashSet,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -13,7 +12,7 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use serde::Serialize;
 use tokio::sync::RwLock;
-use zksync_config::configs::{api::Web3JsonRpcConfig, chain::StateKeeperConfig, TxSinkConfig};
+use zksync_config::configs::{api::Web3JsonRpcConfig, chain::StateKeeperConfig};
 use zksync_dal::{
     transactions_dal::L2TxSubmissionResult, Connection, ConnectionPool, Core, CoreDal,
 };
@@ -30,10 +29,6 @@ use zksync_multivm::{
 use zksync_node_fee_model::{ApiFeeInputProvider, BatchFeeModelInputProvider};
 use zksync_object_store::ObjectStore;
 use zksync_state::PostgresStorageCaches;
-use zksync_state_keeper::{
-    seal_criteria::{ConditionalSealer, NoopSealer, SealData},
-    SequencerSealer,
-};
 use zksync_types::{
     api::state_override::StateOverride,
     fee_model::BatchFeeInput,
@@ -44,21 +39,18 @@ use zksync_types::{
     vm::FastVmMode,
     AccountTreeId, Address, L2ChainId, Nonce, ProtocolVersionId, Transaction, H160, H256, U256,
 };
-use zksync_vm_executor::oneshot::{
-    CallOrExecute, EstimateGas, MultiVmBaseSystemContracts, OneshotEnvParameters,
+use zksync_vm_executor::{
+    interface::TransactionFilter,
+    oneshot::{CallOrExecute, EstimateGas, MultiVmBaseSystemContracts, OneshotEnvParameters},
 };
 
-use self::{
-    deny_list_pool_sink::DenyListPoolSink, master_pool_sink::MasterPoolSink, result::ApiCallResult,
-    tx_sink::TxSink,
-};
 pub(super) use self::{gas_estimation::BinarySearchKind, result::SubmitTxError};
+use self::{master_pool_sink::MasterPoolSink, result::ApiCallResult, tx_sink::TxSink};
 use crate::execution_sandbox::{
     BlockArgs, SandboxAction, SandboxExecutionOutput, SandboxExecutor, SubmitTxStage,
     VmConcurrencyBarrier, VmConcurrencyLimiter, SANDBOX_METRICS,
 };
 
-pub mod deny_list_pool_sink;
 mod gas_estimation;
 pub mod master_pool_sink;
 pub mod proxy;
@@ -68,55 +60,33 @@ pub(crate) mod tests;
 pub mod tx_sink;
 pub mod whitelist;
 
-pub struct TxSenderBuilderConfigs {
-    pub tx_sender_config: TxSenderConfig,
-    pub web3_json_config: Web3JsonRpcConfig,
-    pub state_keeper_config: StateKeeperConfig,
-    pub tx_sink_config: Option<TxSinkConfig>,
-}
-
 pub async fn build_tx_sender(
-    builder_config: TxSenderBuilderConfigs,
+    tx_sender_config: &TxSenderConfig,
+    web3_json_config: &Web3JsonRpcConfig,
     replica_pool: ConnectionPool<Core>,
     master_pool: ConnectionPool<Core>,
     batch_fee_model_input_provider: Arc<dyn BatchFeeModelInputProvider>,
     storage_caches: PostgresStorageCaches,
 ) -> anyhow::Result<(TxSender, VmConcurrencyBarrier)> {
-    let sequencer_sealer = SequencerSealer::new(builder_config.state_keeper_config);
+    let master_pool_sink = MasterPoolSink::new(master_pool);
+    let tx_sender_builder = TxSenderBuilder::new(
+        tx_sender_config.clone(),
+        replica_pool.clone(),
+        Arc::new(master_pool_sink),
+    );
 
-    let tx_sender_builder = if let Some(config) = builder_config.tx_sink_config {
-        let deny_list_pool_sink = if let Some(list) = config.deny_list() {
-            DenyListPoolSink::new(MasterPoolSink::new(master_pool), list)
-        } else {
-            DenyListPoolSink::new(MasterPoolSink::new(master_pool), HashSet::<Address>::new())
-        };
-
-        TxSenderBuilder::new(
-            builder_config.tx_sender_config.clone(),
-            replica_pool.clone(),
-            Arc::new(deny_list_pool_sink),
-        )
-        .with_sealer(Arc::new(sequencer_sealer))
-    } else {
-        TxSenderBuilder::new(
-            builder_config.tx_sender_config.clone(),
-            replica_pool.clone(),
-            Arc::new(MasterPoolSink::new(master_pool)),
-        )
-        .with_sealer(Arc::new(sequencer_sealer))
-    };
-
-    let max_concurrency = builder_config.web3_json_config.vm_concurrency_limit();
+    let max_concurrency = web3_json_config.vm_concurrency_limit;
     let (vm_concurrency_limiter, vm_barrier) = VmConcurrencyLimiter::new(max_concurrency);
 
-    let batch_fee_input_provider =
-        ApiFeeInputProvider::new(batch_fee_model_input_provider, replica_pool);
+    let batch_fee_input_provider = ApiFeeInputProvider::new(
+        batch_fee_model_input_provider,
+        replica_pool,
+        web3_json_config.gas_price_scale_factor_open_batch,
+    );
     let executor_options = SandboxExecutorOptions::new(
-        builder_config.tx_sender_config.chain_id,
-        AccountTreeId::new(builder_config.tx_sender_config.fee_account_addr),
-        builder_config
-            .tx_sender_config
-            .validation_computational_gas_limit,
+        tx_sender_config.chain_id,
+        AccountTreeId::new(tx_sender_config.fee_account_addr),
+        tx_sender_config.validation_computational_gas_limit,
     )
     .await?;
     let tx_sender = tx_sender_builder.build(
@@ -137,6 +107,9 @@ pub struct SandboxExecutorOptions {
     pub(crate) estimate_gas: OneshotEnvParameters<EstimateGas>,
     /// Env parameters to be used when performing `eth_call` requests.
     pub(crate) eth_call: OneshotEnvParameters<CallOrExecute>,
+    pub(crate) interrupted_execution_latency_histogram: &'static vise::Histogram<Duration>,
+    #[cfg(test)]
+    pub(crate) storage_delay: Option<Duration>,
 }
 
 impl SandboxExecutorOptions {
@@ -172,6 +145,10 @@ impl SandboxExecutorOptions {
                 operator_account,
                 validation_computational_gas_limit,
             ),
+            interrupted_execution_latency_histogram: &SANDBOX_METRICS
+                .sandbox_interrupted_execution_latency,
+            #[cfg(test)]
+            storage_delay: None,
         })
     }
 
@@ -200,8 +177,8 @@ pub struct TxSenderBuilder {
     replica_connection_pool: ConnectionPool<Core>,
     /// Sink to be used to persist transactions.
     tx_sink: Arc<dyn TxSink>,
-    /// Batch sealer used to check whether transaction can be executed by the sequencer.
-    sealer: Option<Arc<dyn ConditionalSealer>>,
+    /// Transaction filter that can be used to reject transactions.
+    transaction_filter: Option<Arc<dyn TransactionFilter>>,
     /// Cache for tokens that are white-listed for AA.
     whitelisted_tokens_for_aa_cache: Option<Arc<RwLock<Vec<Address>>>>,
 }
@@ -216,13 +193,13 @@ impl TxSenderBuilder {
             config,
             replica_connection_pool,
             tx_sink,
-            sealer: None,
+            transaction_filter: None,
             whitelisted_tokens_for_aa_cache: None,
         }
     }
 
-    pub fn with_sealer(mut self, sealer: Arc<dyn ConditionalSealer>) -> Self {
-        self.sealer = Some(sealer);
+    pub fn with_transaction_filter(mut self, filter: Arc<dyn TransactionFilter>) -> Self {
+        self.transaction_filter = Some(filter);
         self
     }
 
@@ -239,7 +216,7 @@ impl TxSenderBuilder {
         storage_caches: PostgresStorageCaches,
     ) -> TxSender {
         // Use noop sealer if no sealer was explicitly provided.
-        let sealer = self.sealer.unwrap_or_else(|| Arc::new(NoopSealer));
+        let transaction_filter = self.transaction_filter.unwrap_or_else(|| Arc::new(()));
         let whitelisted_tokens_for_aa_cache =
             self.whitelisted_tokens_for_aa_cache.unwrap_or_else(|| {
                 Arc::new(RwLock::new(self.config.whitelisted_tokens_for_aa.clone()))
@@ -267,7 +244,7 @@ impl TxSenderBuilder {
             batch_fee_input_provider,
             vm_concurrency_limiter,
             whitelisted_tokens_for_aa_cache,
-            sealer,
+            transaction_filter,
             executor,
         }))
     }
@@ -339,7 +316,7 @@ pub struct TxSenderInner {
     // Cache for white-listed tokens.
     pub(super) whitelisted_tokens_for_aa_cache: Arc<RwLock<Vec<Address>>>,
     /// Batch sealer used to check whether transaction can be executed by the sequencer.
-    pub(super) sealer: Arc<dyn ConditionalSealer>,
+    pub(super) transaction_filter: Arc<dyn TransactionFilter>,
     pub(super) executor: SandboxExecutor,
 }
 
@@ -487,7 +464,8 @@ impl TxSender {
         }
         let mut stage_latency =
             SANDBOX_METRICS.start_tx_submit_stage(tx_hash, SubmitTxStage::DbInsert);
-        self.ensure_tx_executable(&tx.clone().into(), execution_output.metrics, true)?;
+        self.ensure_tx_executable(&tx.clone().into(), execution_output.metrics, true)
+            .await?;
 
         let validation_traces = validation_result?;
         let submission_res_handle = self
@@ -783,7 +761,8 @@ impl TxSender {
         Ok(result)
     }
 
-    pub async fn gas_price(&self) -> anyhow::Result<u64> {
+
+    pub async fn gas_price_and_gas_per_pubdata(&self) -> anyhow::Result<(u64, u64)> {
         let mut connection = self.acquire_replica_connection().await?;
         let protocol_version = connection
             .blocks_dal()
@@ -792,14 +771,14 @@ impl TxSender {
             .context("failed obtaining pending protocol version")?;
         drop(connection);
 
-        let (base_fee, _) = derive_base_fee_and_gas_per_pubdata(
+        let (base_fee, gas_per_pubdata) = derive_base_fee_and_gas_per_pubdata(
             self.scaled_batch_fee_input().await?,
             protocol_version.into(),
         );
-        Ok(base_fee)
+        Ok((base_fee, gas_per_pubdata))
     }
 
-    fn ensure_tx_executable(
+    async fn ensure_tx_executable(
         &self,
         transaction: &Transaction,
         tx_metrics: TransactionExecutionMetrics,
@@ -813,18 +792,14 @@ impl TxSender {
             H256::zero()
         };
 
-        // Using `ProtocolVersionId::latest()` for a short period we might end up in a scenario where the StateKeeper is still pre-boojum
-        // but the API assumes we are post boojum. In this situation we will determine a tx as being executable but the StateKeeper will
-        // still reject them as it's not.
-        let protocol_version = ProtocolVersionId::latest();
-        let seal_data = SealData::for_transaction(transaction, tx_metrics);
-        if let Some(reason) = self
+        if let Err(reason) = self
             .0
-            .sealer
-            .find_unexecutable_reason(&seal_data, protocol_version)
+            .transaction_filter
+            .filter_transaction(transaction, &tx_metrics)
+            .await
         {
             let message = format!(
-                "Tx is Unexecutable because of {reason}; inputs for decision: {seal_data:?}"
+                "Tx is Unexecutable because of {reason}; inputs for decision: {tx_metrics:?}"
             );
             if log_message {
                 tracing::info!("{tx_hash:#?} {message}");

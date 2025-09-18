@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -35,7 +36,7 @@ impl BasicWitnessInputProducer {
         pool: ConnectionPool<Core>,
         object_store: Arc<dyn ObjectStore>,
         batch_executor_factory: Box<dyn BatchExecutorFactory<OwnedStorage>>,
-        rocksdb_path: String,
+        rocksdb_path: PathBuf,
         chain_id: L2ChainId,
         first_processed_batch: L1BatchNumber,
         window_size: u32,
@@ -278,7 +279,6 @@ async fn get_updates_manager_witness_input_data(
         storage_refunds,
         pubdata_costs,
         witness_block_state,
-        _marker: std::marker::PhantomData,
     })
 }
 

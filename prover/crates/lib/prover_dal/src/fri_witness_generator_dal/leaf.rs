@@ -131,6 +131,7 @@ impl FriLeafWitnessGeneratorDal<'_, '_> {
                         ON
                             prover_jobs_fri.l1_batch_number = lawj.l1_batch_number
                             AND prover_jobs_fri.circuit_id = lawj.circuit_id
+                            AND prover_jobs_fri.chain_id = lawj.chain_id
                     WHERE
                         lawj.status = 'waiting_for_proofs'
                         AND prover_jobs_fri.status = 'successful'
@@ -174,8 +175,7 @@ impl FriLeafWitnessGeneratorDal<'_, '_> {
             SET
                 status = 'queued',
                 updated_at = NOW(),
-                processing_started_at = NOW(),
-                priority = priority + 1
+                processing_started_at = NOW()
             WHERE
                 (
                     status = 'in_progress'

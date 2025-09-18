@@ -45,9 +45,9 @@ pub trait EthNamespace {
         &self,
         requests: Vec<CallRequest>,
         block: Option<BlockIdVariant>,
-        fast_fail: bool,
-        use_parallel: bool,
-        disable_cache: bool,
+        fast_fail: Option<bool>,
+        use_parallel: Option<bool>,
+        disable_cache: Option<bool>,
     ) -> RpcResult<MultiCallResp>;
     #[method(name = "estimateGas")]
     async fn estimate_gas(

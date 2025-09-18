@@ -41,10 +41,13 @@ impl EthNamespaceServer for EthNamespace {
         &self,
         reqs: Vec<CallRequest>,
         block: Option<BlockIdVariant>,
-        fast_fail: bool,
-        use_parallel: bool,
-        disable_cache: bool,
+        fast_fail: Option<bool>,
+        use_parallel: Option<bool>,
+        disable_cache: Option<bool>,
     ) -> RpcResult<MultiCallResp> {
+        let fast_fail = fast_fail.unwrap_or(true);
+        let use_parallel = use_parallel.unwrap_or(true);
+        let disable_cache = disable_cache.unwrap_or(false);
         self.multi_call_impl(
             reqs,
             block.map(Into::into),
@@ -231,7 +234,9 @@ impl EthNamespaceServer for EthNamespace {
     }
 
     async fn protocol_version(&self) -> RpcResult<String> {
-        Ok(self.protocol_version())
+        self.protocol_version_impl()
+            .await
+            .map_err(|err| self.current_method().map_err(err))
     }
 
     async fn send_raw_transaction(&self, tx_bytes: Bytes) -> RpcResult<H256> {

@@ -17,7 +17,7 @@ use zksync_tee_prover_interface::{
     inputs::{TeeVerifierInput, V1TeeVerifierInput},
 };
 use zksync_types::{tee_types::TeeType, L1BatchNumber, L2ChainId};
-use zksync_vm_executor::storage::L1BatchParamsProvider;
+use zksync_vm_executor::storage::{L1BatchParamsProvider, RestoredL1BatchEnv};
 
 use crate::{errors::TeeProcessorError, metrics::METRICS};
 
@@ -51,7 +51,7 @@ impl TeeRequestProcessor {
         tracing::info!("Received request for proof generation data: {:?}", request);
 
         let batch_ignored_timeout = ChronoDuration::from_std(
-            self.config.tee_batch_permanently_ignored_timeout(),
+            self.config.batch_permanently_ignored_timeout,
         )
         .map_err(|err| {
             TeeProcessorError::GeneralError(format!(
@@ -77,7 +77,10 @@ impl TeeRequestProcessor {
                 Ok(input) => {
                     break Ok(Some(Json(TeeProofGenerationDataResponse(Box::new(input)))));
                 }
-                Err(TeeProcessorError::ObjectStore(ObjectStoreError::KeyNotFound(_))) => {
+                Err(TeeProcessorError::ObjectStore {
+                    source: ObjectStoreError::KeyNotFound(_),
+                    context,
+                }) => {
                     let duration = Utc::now().signed_duration_since(locked_batch.created_at);
                     let status = if duration > batch_ignored_timeout {
                         TeeProofGenerationJobStatus::PermanentlyIgnored
@@ -87,7 +90,7 @@ impl TeeRequestProcessor {
                     self.unlock_batch(batch_number, request.tee_type, status)
                         .await?;
                     tracing::warn!(
-                        "Assigned status {} to batch {} created at {}",
+                        "Assigned status `{}` to batch {} created at {}: {context}",
                         status,
                         batch_number,
                         locked_batch.created_at
@@ -115,13 +118,19 @@ impl TeeRequestProcessor {
             .blob_store
             .get(l1_batch_number)
             .await
-            .map_err(TeeProcessorError::ObjectStore)?;
+            .map_err(|source| TeeProcessorError::ObjectStore {
+                source,
+                context: "Failed to get VMRunWitnessInputData".into(),
+            })?;
 
         let merkle_paths: WitnessInputMerklePaths = self
             .blob_store
             .get(l1_batch_number)
             .await
-            .map_err(TeeProcessorError::ObjectStore)?;
+            .map_err(|source| TeeProcessorError::ObjectStore {
+                source,
+                context: "Failed to get WitnessInputMerklePaths".into(),
+            })?;
 
         let mut connection = self.pool.connection_tagged("tee_request_processor").await?;
 
@@ -139,7 +148,12 @@ impl TeeRequestProcessor {
         // This means we don't want to reject any execution, therefore we're using MAX as an allow all.
         let validation_computational_gas_limit = u32::MAX;
 
-        let (system_env, l1_batch_env, pubdata_params) = l1_batch_params_provider
+        let RestoredL1BatchEnv {
+            system_env,
+            l1_batch_env,
+            pubdata_params,
+            ..
+        } = l1_batch_params_provider
             .load_l1_batch_env(
                 &mut connection,
                 l1_batch_number,
@@ -173,7 +187,7 @@ impl TeeRequestProcessor {
             .tee_proof_generation_dal()
             .lock_batch_for_proving(
                 tee_type,
-                self.config.tee_proof_generation_timeout(),
+                self.config.proof_generation_timeout,
                 min_batch_number,
             )
             .await

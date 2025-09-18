@@ -13,6 +13,7 @@ impl SealCriterion for SlotsCriterion {
         config: &StateKeeperConfig,
         tx_count: usize,
         _l1_tx_count: usize,
+        _interop_roots_count: usize,
         _block_data: &SealData,
         _tx_data: &SealData,
         protocol_version: ProtocolVersionId,
@@ -36,6 +37,7 @@ impl SealCriterion for SlotsCriterion {
         config: &StateKeeperConfig,
         tx_count: usize,
         _l1_tx_count: usize,
+        _interop_roots_count: usize,
         _block_data: &SealData,
         _protocol_version: ProtocolVersionId,
     ) -> Option<f64> {
@@ -56,7 +58,7 @@ mod tests {
         // Create an empty config and only setup fields relevant for the test.
         let config = StateKeeperConfig {
             transaction_slots: 2,
-            ..Default::default()
+            ..StateKeeperConfig::for_tests()
         };
 
         let criterion = SlotsCriterion;
@@ -64,6 +66,7 @@ mod tests {
         let almost_full_block_resolution = criterion.should_seal(
             &config,
             config.transaction_slots - 1,
+            0,
             0,
             &SealData::default(),
             &SealData::default(),
@@ -74,6 +77,7 @@ mod tests {
         let full_block_resolution = criterion.should_seal(
             &config,
             config.transaction_slots,
+            0,
             0,
             &SealData::default(),
             &SealData::default(),

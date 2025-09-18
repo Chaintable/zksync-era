@@ -20,6 +20,7 @@ import path from 'path';
 import { CONTRACT_DEPLOYER, CONTRACT_DEPLOYER_ADDRESS, hashBytecode, ZKSYNC_MAIN_ABI } from 'zksync-ethers/build/utils';
 import { utils as zksync_utils } from 'zksync-ethers';
 import { logsTestPath } from 'utils/build/logs';
+import { waitForNewL1Batch } from 'utils';
 
 async function logsPath(name: string): Promise<string> {
     return await logsTestPath(fileConfig.chain, 'logs/upgrade/', name);
@@ -258,7 +259,8 @@ describe('Upgrade test', function () {
             // Different versions of foundry have different versions of the artifacts' paths
             [
                 'contracts/system-contracts/zkout/playground_batch.yul/contracts-preprocessed/bootloader/playground_batch.yul.json',
-                'contracts/system-contracts/zkout/playground_batch.yul/playground_batch.json'
+                'contracts/system-contracts/zkout/playground_batch.yul/playground_batch.json',
+                'contracts/system-contracts/zkout/playground_batch.yul/Bootloader.json'
             ],
             'contracts/system-contracts/bootloader/build/artifacts/playground_batch.yul.zbin'
         );
@@ -487,7 +489,7 @@ describe('Upgrade test', function () {
                 [],
                 l1AdminGovWallet.provider!,
                 // It does not matter who is the refund recipient in this test
-                gatewayInfo.l2ChainAdmin
+                call.target
             );
         }
 
@@ -574,7 +576,8 @@ function readCode(newPaths: string[], legacyPath?: string): string {
         if (path.endsWith('.zbin')) {
             return ethers.hexlify(readFileSync(path));
         } else {
-            return require(path).bytecode;
+            const legacyContent = require(path);
+            return '0x'.concat(legacyContent.bytecode?.object || legacyContent.bytecode);
         }
     } else {
         throw new Error(`Cannot read contract at ${newPaths.join(',')}`);
@@ -645,20 +648,6 @@ interface ForceDeployment {
     value: bigint;
     // The constructor calldata
     input: BytesLike;
-}
-
-async function waitForNewL1Batch(wallet: zksync.Wallet): Promise<zksync.types.TransactionReceipt> {
-    // Send a dummy transaction and wait until the new L1 batch is created.
-    const oldReceipt = await wallet.transfer({ to: wallet.address, amount: 0 }).then((tx) => tx.wait());
-    // Invariant: even with 1 transaction, l1 batch must be eventually sealed, so this loop must exit.
-    while (!(await wallet.provider.getTransactionReceipt(oldReceipt.hash))!.l1BatchNumber) {
-        await zksync.utils.sleep(wallet.provider.pollingInterval);
-    }
-    const receipt = await wallet.provider.getTransactionReceipt(oldReceipt.hash);
-    if (!receipt) {
-        throw new Error('Failed to get the receipt of the transaction');
-    }
-    return receipt;
 }
 
 async function prepareUpgradeCalldata(
@@ -822,7 +811,7 @@ async function prepareGovernanceCalldata(
             factoryDeps,
             l1Provider,
             // It does not matter who is the refund recipient in this test
-            gatewayInfo.l2ChainAdmin
+            to
         );
     } else {
         call = {

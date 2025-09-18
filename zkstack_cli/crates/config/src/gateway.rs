@@ -19,6 +19,7 @@ pub struct GatewayConfig {
     pub validator_timelock_addr: Address,
     pub multicall3_addr: Address,
     pub relayed_sl_da_validator: Address,
+    pub rollup_da_manager: Address,
     pub validium_da_validator: Address,
     pub diamond_cut_data: Bytes,
 }
@@ -40,6 +41,7 @@ impl From<DeployGatewayCTMOutput> for GatewayConfig {
             validator_timelock_addr: output.gateway_state_transition.validator_timelock_addr,
             relayed_sl_da_validator: output.relayed_sl_da_validator,
             validium_da_validator: output.validium_da_validator,
+            rollup_da_manager: output.gateway_state_transition.rollup_da_manager_addr,
         }
     }
 }
@@ -76,7 +78,6 @@ impl GatewayChainConfigPatch {
         &mut self,
         gateway_config: &GatewayConfig,
         diamond_proxy_addr: Address,
-        l2_chain_admin_addr: Address,
         gateway_chain_id: SLChainId,
     ) -> anyhow::Result<()> {
         self.0.insert_yaml(
@@ -91,9 +92,6 @@ impl GatewayChainConfigPatch {
             .insert_yaml("multicall3_addr", gateway_config.multicall3_addr)?;
         self.0
             .insert_yaml("diamond_proxy_addr", diamond_proxy_addr)?;
-        self.0
-            .insert_yaml("chain_admin_addr", l2_chain_admin_addr)?;
-        self.0.insert_yaml("governance_addr", l2_chain_admin_addr)?;
         self.0.insert_yaml("gateway_chain_id", gateway_chain_id)?;
         Ok(())
     }

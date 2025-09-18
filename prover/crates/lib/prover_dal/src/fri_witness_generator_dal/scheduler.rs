@@ -35,7 +35,9 @@ impl FriSchedulerWitnessGeneratorDal<'_, '_> {
                         prover_jobs_fri
                     JOIN
                         scheduler_witness_jobs_fri swj
-                        ON prover_jobs_fri.l1_batch_number = swj.l1_batch_number
+                        ON
+                            prover_jobs_fri.l1_batch_number = swj.l1_batch_number
+                            AND prover_jobs_fri.chain_id = swj.chain_id
                     WHERE
                         swj.status = 'waiting_for_proofs'
                         AND prover_jobs_fri.status = 'successful'
@@ -87,8 +89,7 @@ impl FriSchedulerWitnessGeneratorDal<'_, '_> {
             SET
                 status = 'queued',
                 updated_at = NOW(),
-                processing_started_at = NOW(),
-                priority = priority + 1
+                processing_started_at = NOW()
             WHERE
                 (
                     status = 'in_progress'
@@ -243,8 +244,7 @@ impl FriSchedulerWitnessGeneratorDal<'_, '_> {
             SET
                 status = 'queued',
                 updated_at = NOW(),
-                processing_started_at = NOW(),
-                priority = priority + 1
+                processing_started_at = NOW()
             WHERE
                 l1_batch_number = $1
                 AND chain_id = $2

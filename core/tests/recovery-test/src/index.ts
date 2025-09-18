@@ -8,10 +8,10 @@ import { promisify } from 'node:util';
 import { ChildProcess, exec, spawn } from 'node:child_process';
 import * as zksync from 'zksync-ethers';
 import * as ethers from 'ethers';
-import path from 'node:path';
 import { expect } from 'chai';
 import { runExternalNodeInBackground } from './utils';
 import { killPidWithAllChilds } from 'utils/build/kill';
+import { getMainWalletPk } from 'highlevel-test-tools/src/wallets';
 
 export interface Health<T> {
     readonly status: string;
@@ -123,6 +123,10 @@ export enum NodeComponents {
     WITH_TREE_FETCHER_AND_NO_TREE = 'core,api,tree_fetcher'
 }
 
+export function withDAFetcher(components: NodeComponents): string {
+    return components + ',da_fetcher';
+}
+
 export class NodeProcess {
     static async stopAll(signal: 'INT' | 'KILL' = 'INT') {
         interface ChildProcessError extends Error {
@@ -168,11 +172,14 @@ export class NodeProcess {
         logsFile: FileHandle | string,
         pathToHome: string,
         components: NodeComponents = NodeComponents.STANDARD,
-        chain: string
+        chain: string,
+        deploymentMode?: string
     ) {
         const logs = typeof logsFile === 'string' ? await fs.open(logsFile, 'a') : logsFile;
+        let componentsArr = deploymentMode === 'Validium' ? [withDAFetcher(components)] : [components];
+
         let childProcess = runExternalNodeInBackground({
-            components: [components],
+            components: componentsArr,
             stdio: ['ignore', logs.fd, logs.fd],
             cwd: pathToHome,
             chain
@@ -219,21 +226,17 @@ function waitForProcess(childProcess: ChildProcess): Promise<any> {
  */
 export class FundedWallet {
     static async create(mainNode: zksync.Provider, eth: ethers.Provider): Promise<FundedWallet> {
-        if (!process.env.MASTER_WALLET_PK) {
-            const testConfigPath = path.join(process.env.ZKSYNC_HOME!, `etc/test_config/constant/eth.json`);
-            const ethTestConfig = JSON.parse(await fs.readFile(testConfigPath, { encoding: 'utf-8' }));
-            const mnemonic = ethers.Mnemonic.fromPhrase(ethTestConfig.test_mnemonic);
-            const walletHD = ethers.HDNodeWallet.fromMnemonic(mnemonic, "m/44'/60'/0'/0/0");
-
-            process.env.MASTER_WALLET_PK = walletHD.privateKey;
-        }
-
-        const wallet = new zksync.Wallet(process.env.MASTER_WALLET_PK, mainNode, eth);
+        const chainName = process.env.CHAIN_NAME!!;
+        const wallet = new zksync.Wallet(getMainWalletPk(chainName), mainNode, eth);
 
         return new FundedWallet(wallet);
     }
 
-    private constructor(public readonly wallet: zksync.Wallet) {}
+    private constructor(private readonly wallet: zksync.Wallet) {}
+
+    public evmWallet(): ethers.Wallet {
+        return new ethers.Wallet(this.wallet.privateKey, this.wallet._providerL2());
+    }
 
     /** Ensure that this wallet is funded on L2, depositing funds from L1 if necessary. */
     async ensureIsFunded() {

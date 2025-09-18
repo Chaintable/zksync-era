@@ -16,6 +16,7 @@ pub struct DebugCallFlat {
     pub action: Action,
     pub result: Option<CallResult>,
     pub subtraces: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub trace_address: Vec<usize>,
     pub transaction_position: usize,
