@@ -7,6 +7,7 @@ use axum::{
     Json, Router,
 };
 use tokio::sync::watch;
+use tower_http::trace::TraceLayer;
 use zksync_prover_interface::api::{
     PollGeneratedProofsRequest, PollGeneratedProofsResponse, ProofGenerationData,
     SubmitProofGenerationDataResponse,
@@ -27,6 +28,7 @@ impl Api {
                 "/submit_request_for_proofs",
                 post(Api::save_proof_generation_data),
             )
+            .layer(TraceLayer::new_for_http())
             .layer(DefaultBodyLimit::disable())
             .with_state(processor);
 
@@ -46,9 +48,9 @@ impl Api {
         axum::serve(listener, self.router)
         .with_graceful_shutdown(async move {
             if stop_receiver.changed().await.is_err() {
-                tracing::warn!("Stop signal sender for prover gateway API server was dropped without sending a signal");
+                tracing::warn!("Stop request sender for prover gateway API server was dropped without sending a signal");
             }
-            tracing::info!("Stop signal received, prover gateway API server is shutting down");
+            tracing::info!("Stop request received, prover gateway API server is shutting down");
         })
         .await
         .context("Prover gateway API server failed")?;

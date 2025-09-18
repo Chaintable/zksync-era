@@ -65,7 +65,6 @@ async fn prepare_configs(
             .map(GatewayChainConfig::gateway_chain_id)
             .transpose()?,
     )?;
-    en_config.set_batch_commitment_mode(genesis.l1_batch_commitment_mode()?)?;
     en_config.set_main_node_url(&l2_rpc_url)?;
     en_config.save().await?;
 
@@ -108,8 +107,13 @@ async fn prepare_configs(
     general_en.save().await?;
 
     let offset = 0; // This is zero because general_en ports already have a chain offset
-    ports.allocate_ports_in_yaml(shell, &general_config_path, offset)?;
-    ports.allocate_ports_in_yaml(shell, &en_configs_path.join(CONSENSUS_CONFIG_FILE), offset)?;
+    ports.allocate_ports_in_yaml(shell, &general_config_path, offset, args.tight_ports)?;
+    ports.allocate_ports_in_yaml(
+        shell,
+        &en_configs_path.join(CONSENSUS_CONFIG_FILE),
+        offset,
+        args.tight_ports,
+    )?;
 
     Ok(())
 }

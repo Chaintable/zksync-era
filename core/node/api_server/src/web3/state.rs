@@ -10,7 +10,7 @@ use std::{
 use anyhow::Context as _;
 use futures::TryFutureExt;
 use lru::LruCache;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use vise::GaugeGuard;
 use zksync_config::{
     configs::{
@@ -24,8 +24,10 @@ use zksync_config::{
     GenesisConfig,
 };
 use zksync_dal::{Connection, ConnectionPool, Core, CoreDal, DalError};
-use zksync_metadata_calculator::api_server::TreeApiClient;
-use zksync_node_sync::SyncState;
+use zksync_shared_resources::{
+    api::{BridgeAddressesHandle, SyncState},
+    tree::TreeApiClient,
+};
 use zksync_types::{
     api, commitment::L1BatchCommitmentMode, l2::L2Tx, settlement::SettlementLayer,
     transaction_request::CallRequest, Address, L1BatchNumber, L1ChainId, L2BlockNumber, L2ChainId,
@@ -41,12 +43,12 @@ use super::{
     backend_jsonrpsee::MethodTracer,
     mempool_cache::MempoolCache,
     metrics::{FilterType, FILTER_METRICS},
+    receipts::AccountTypesCache,
     TypedFilter,
 };
 use crate::{
     execution_sandbox::{BlockArgs, BlockArgsError, BlockStartInfo},
     tx_sender::{tx_sink::TxSink, TxSender},
-    utils::AccountTypesCache,
     web3::metrics::FilterMetrics,
 };
 
@@ -111,8 +113,6 @@ pub struct InternalApiConfigBase {
     /// Chain ID of the L1 network. Note, that it may be different from the chain id of the settlement layer.
     pub l1_chain_id: L1ChainId,
     pub l2_chain_id: L2ChainId,
-    pub dummy_verifier: bool,
-    pub l1_batch_commit_data_generator_mode: L1BatchCommitmentMode,
     pub max_tx_size: usize,
     pub estimate_gas_scale_factor: f64,
     pub estimate_gas_acceptable_overestimation: u32,
@@ -121,6 +121,7 @@ pub struct InternalApiConfigBase {
     pub fee_history_limit: u64,
     pub filters_disabled: bool,
     pub l1_to_l2_txs_paused: bool,
+    pub eth_call_gas_cap: Option<u64>,
 }
 
 impl InternalApiConfigBase {
@@ -128,17 +129,16 @@ impl InternalApiConfigBase {
         Self {
             l1_chain_id: genesis.l1_chain_id,
             l2_chain_id: genesis.l2_chain_id,
-            dummy_verifier: genesis.dummy_verifier,
-            l1_batch_commit_data_generator_mode: genesis.l1_batch_commit_data_generator_mode,
-            max_tx_size: web3_config.max_tx_size,
+            max_tx_size: web3_config.max_tx_size.0 as usize,
             estimate_gas_scale_factor: web3_config.estimate_gas_scale_factor,
             estimate_gas_acceptable_overestimation: web3_config
                 .estimate_gas_acceptable_overestimation,
             estimate_gas_optimize_search: web3_config.estimate_gas_optimize_search,
-            req_entities_limit: web3_config.req_entities_limit(),
-            fee_history_limit: web3_config.fee_history_limit(),
+            req_entities_limit: web3_config.req_entities_limit as usize,
+            fee_history_limit: web3_config.fee_history_limit,
             filters_disabled: web3_config.filters_disabled,
             l1_to_l2_txs_paused: false,
+            eth_call_gas_cap: web3_config.eth_call_gas_cap,
         }
     }
 
@@ -178,7 +178,8 @@ pub struct InternalApiConfig {
     pub timestamp_asserter_address: Option<Address>,
     pub l2_multicall3: Option<Address>,
     pub l1_to_l2_txs_paused: bool,
-    pub settlement_layer: SettlementLayer,
+    pub settlement_layer: Option<SettlementLayer>,
+    pub eth_call_gas_cap: Option<u64>,
 }
 
 impl InternalApiConfig {
@@ -187,7 +188,9 @@ impl InternalApiConfig {
         l1_contracts_config: &SettlementLayerSpecificContracts,
         l1_ecosystem_contracts: &L1SpecificContracts,
         l2_contracts: &L2Contracts,
-        settlement_layer: SettlementLayer,
+        settlement_layer: Option<SettlementLayer>,
+        dummy_verifier: bool,
+        l1_batch_commit_data_generator_mode: L1BatchCommitmentMode,
     ) -> Self {
         Self {
             l1_chain_id: base.l1_chain_id,
@@ -218,12 +221,13 @@ impl InternalApiConfig {
             fee_history_limit: base.fee_history_limit,
             base_token_address: Some(l1_ecosystem_contracts.base_token_address),
             filters_disabled: base.filters_disabled,
-            dummy_verifier: base.dummy_verifier,
-            l1_batch_commit_data_generator_mode: base.l1_batch_commit_data_generator_mode,
+            dummy_verifier,
+            l1_batch_commit_data_generator_mode,
             timestamp_asserter_address: l2_contracts.timestamp_asserter_addr,
             l2_multicall3: l2_contracts.multicall3,
             l1_to_l2_txs_paused: base.l1_to_l2_txs_paused,
             settlement_layer,
+            eth_call_gas_cap: base.eth_call_gas_cap,
         }
     }
 
@@ -243,7 +247,9 @@ impl InternalApiConfig {
             l1_contracts_config,
             l1_ecosystem_contracts,
             l2_contracts,
-            settlement_layer,
+            Some(settlement_layer),
+            genesis_config.dummy_verifier,
+            genesis_config.l1_batch_commit_data_generator_mode,
         )
     }
 }
@@ -283,32 +289,6 @@ impl SealedL2BlockNumber {
         } else {
             diff
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct BridgeAddressesHandle(Arc<RwLock<api::BridgeAddresses>>);
-
-impl BridgeAddressesHandle {
-    pub fn new(bridge_addresses: api::BridgeAddresses) -> Self {
-        Self(Arc::new(RwLock::new(bridge_addresses)))
-    }
-
-    pub async fn update(&self, bridge_addresses: api::BridgeAddresses) {
-        *self.0.write().await = bridge_addresses;
-    }
-
-    pub async fn update_l1_shared_bridge(&self, l1_shared_bridge: Address) {
-        self.0.write().await.l1_shared_default_bridge = Some(l1_shared_bridge);
-    }
-
-    pub async fn update_l2_bridges(&self, l2_shared_bridge: Address) {
-        self.0.write().await.l2_shared_default_bridge = Some(l2_shared_bridge);
-        self.0.write().await.l2_erc20_default_bridge = Some(l2_shared_bridge);
-    }
-
-    pub async fn read(&self) -> api::BridgeAddresses {
-        self.0.read().await.clone()
     }
 }
 

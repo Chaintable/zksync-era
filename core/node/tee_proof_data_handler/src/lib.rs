@@ -14,6 +14,7 @@ use zksync_types::{commitment::L1BatchCommitmentMode, L2ChainId};
 
 mod errors;
 mod metrics;
+pub mod node;
 mod tee_request_processor;
 #[cfg(test)]
 mod tests;
@@ -42,9 +43,9 @@ pub async fn run_server(
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             if stop_receiver.changed().await.is_err() {
-                tracing::warn!("Stop signal sender for proof data handler server was dropped without sending a signal");
+                tracing::warn!("Stop request sender for proof data handler server was dropped without sending a signal");
             }
-            tracing::info!("Stop signal received, proof data handler server is shutting down");
+            tracing::info!("Stop request received, proof data handler server is shutting down");
         })
         .await
         .context("Proof data handler server failed")?;
@@ -82,7 +83,7 @@ fn create_proof_processing_router(
             ),
         )
         .route(
-            "/tee/submit_proofs/:l1_batch_number",
+            "/tee/submit_proofs/{l1_batch_number}",
             post(
                 move |l1_batch_number: Path<u32>, payload: Json<SubmitTeeProofRequest>| async move {
                     submit_tee_proof_processor

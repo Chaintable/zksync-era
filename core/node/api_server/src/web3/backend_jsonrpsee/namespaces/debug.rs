@@ -1,6 +1,7 @@
 use zksync_types::{
     api::{BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, TracerConfig, TransactionReceipt, PreResult, OpenEthActionTrace},
     transaction_request::CallRequest,
+    web3::Bytes,
     H256,
 };
 use zksync_web3_decl::{
@@ -53,25 +54,19 @@ impl DebugNamespaceServer for DebugNamespace {
             .map_err(|err| self.current_method().map_err(err))
     }
 
-    async fn trace_get_log(
-        &self,
-        request: CallRequest,
-        block: Option<BlockId>,
-    ) -> RpcResult<TransactionReceipt> {
-        self.debug_trace_get_log_impl(request, block)
+    async fn get_raw_transaction(&self, tx_hash: H256) -> RpcResult<Option<Bytes>> {
+        self.debug_get_raw_transaction_impl(tx_hash)
             .await
             .map_err(|err| self.current_method().map_err(err))
     }
-    async fn debug_trace_many(
-        &self,
-        requests: Vec<CallRequest>,
-        block: Option<BlockId>,
-    ) -> RpcResult<Vec<PreResult>> {
-        self.debug_pre_trace_many_impl(requests, block)
+
+    async fn get_raw_transactions(&self, block: BlockId) -> RpcResult<Vec<Bytes>> {
+        self.debug_get_raw_transactions_impl(block)
             .await
             .map_err(|err| self.current_method().map_err(err))
     }
 }
+
 
 #[async_trait]
 impl PreNamespaceServer for DebugNamespace {

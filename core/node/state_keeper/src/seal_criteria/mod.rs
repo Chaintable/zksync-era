@@ -67,6 +67,7 @@ pub enum UnexecutableReason {
     BootloaderOutOfGas,
     NotEnoughGasProvided,
     TooMuchUserL2L1Logs,
+    DeploymentNotAllowed,
 }
 
 impl UnexecutableReason {
@@ -82,6 +83,7 @@ impl UnexecutableReason {
             UnexecutableReason::BootloaderOutOfGas => "BootloaderOutOfGas",
             UnexecutableReason::NotEnoughGasProvided => "NotEnoughGasProvided",
             UnexecutableReason::TooMuchUserL2L1Logs => "TooMuchUserL2L1Logs",
+            UnexecutableReason::DeploymentNotAllowed => "DeploymentNotAllowed",
         }
     }
 }
@@ -107,6 +109,7 @@ impl fmt::Display for UnexecutableReason {
             UnexecutableReason::BootloaderOutOfGas => write!(f, "Bootloader out of gas"),
             UnexecutableReason::NotEnoughGasProvided => write!(f, "Not enough gas provided"),
             UnexecutableReason::TooMuchUserL2L1Logs => write!(f, "Too much user l2 l1 logs"),
+            UnexecutableReason::DeploymentNotAllowed => write!(f, "Deployment not allowed"),
         }
     }
 }
@@ -168,9 +171,9 @@ pub struct SealData {
 impl SealData {
     /// Creates sealing data based on the execution of a `transaction`. Assumes that all writes
     /// performed by the transaction are initial.
-    pub fn for_transaction(
+    pub(crate) fn for_transaction(
         transaction: &Transaction,
-        tx_metrics: TransactionExecutionMetrics,
+        tx_metrics: &TransactionExecutionMetrics,
     ) -> Self {
         Self {
             execution_metrics: tx_metrics.vm,
@@ -188,6 +191,7 @@ pub(super) trait SealCriterion: fmt::Debug + Send + Sync + 'static {
         config: &StateKeeperConfig,
         tx_count: usize,
         l1_tx_count: usize,
+        interop_roots_count: usize,
         block_data: &SealData,
         tx_data: &SealData,
         protocol_version: ProtocolVersionId,
@@ -200,6 +204,7 @@ pub(super) trait SealCriterion: fmt::Debug + Send + Sync + 'static {
         _config: &StateKeeperConfig,
         _tx_count: usize,
         _l1_tx_count: usize,
+        _interop_roots_count: usize,
         _block_data: &SealData,
         _protocol_version: ProtocolVersionId,
     ) -> Option<f64> {

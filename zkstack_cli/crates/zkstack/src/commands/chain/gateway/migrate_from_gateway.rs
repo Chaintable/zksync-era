@@ -39,9 +39,10 @@ use crate::{
         admin_call_builder::AdminCallBuilder,
         gateway::{
             constants::DEFAULT_MAX_L1_GAS_PRICE_FOR_PRIORITY_TXS,
-            gateway_common::{extract_and_wait_for_priority_ops, send_tx},
+            gateway_common::extract_and_wait_for_priority_ops,
         },
         init::get_l1_da_validator,
+        utils::send_tx,
     },
     messages::{MSG_CHAIN_NOT_INITIALIZED, MSG_DA_PAIR_REGISTRATION_SPINNER},
     utils::forge::{check_the_balance, fill_forge_private_key, WalletOwner},
@@ -194,16 +195,20 @@ pub async fn run(args: MigrateFromGatewayArgs, shell: &Shell) -> anyhow::Result<
     let spinner = Spinner::new(MSG_DA_PAIR_REGISTRATION_SPINNER);
     set_da_validator_pair(
         shell,
-        &ecosystem_config,
-        chain_contracts_config.l1.chain_admin_addr,
-        &chain_config.get_wallets_config()?.governor,
-        chain_contracts_config.l1.diamond_proxy_addr,
+        &args.forge_args,
+        &ecosystem_config.path_to_l1_foundry(),
+        crate::admin_functions::AdminScriptMode::Broadcast(
+            chain_config.get_wallets_config()?.governor,
+        ),
+        chain_config.chain_id.as_u64(),
+        chain_contracts_config
+            .ecosystem_contracts
+            .bridgehub_proxy_addr,
         l1_da_validator_addr,
         chain_contracts_config
             .l2
             .da_validator_addr
             .context("da_validator_addr")?,
-        &args.forge_args,
         l1_url.clone(),
     )
     .await?;

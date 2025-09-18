@@ -8,9 +8,9 @@ use zksync_types::{commitment::PubdataParams, l2::L2Tx, Transaction};
 use crate::{
     storage::{ReadStorage, StorageView},
     tracer::{ValidationError, ValidationParams, ValidationTraces},
-    BatchTransactionExecutionResult, Call, FinishedL1Batch, L1BatchEnv, L2BlockEnv, OneshotEnv,
-    OneshotTracingParams, OneshotTransactionExecutionResult, SystemEnv, TxExecutionArgs,
-    VmExecutionResultAndLogs,
+    BatchTransactionExecutionResult, FinishedL1Batch, L1BatchEnv, L2BlockEnv, OneshotEnv,
+    OneshotTracingParams, OneshotTransactionExecutionResult, SystemEnv,
+    TransactionExecutionMetrics, TxExecutionArgs,
 };
 
 /// Factory of [`BatchExecutor`]s.
@@ -45,6 +45,12 @@ pub trait BatchExecutor<S>: 'static + Send + fmt::Debug {
 
     /// Finished the current L1 batch.
     async fn finish_batch(self: Box<Self>) -> anyhow::Result<(FinishedL1Batch, StorageView<S>)>;
+
+    /// Rolls back the last executed l2 block.
+    async fn rollback_l2_block(&mut self) -> anyhow::Result<()>;
+
+    /// Commits the first uncommitted l2 block making so it cannot be rolled back anymore.
+    async fn commit_l2_block(&mut self) -> anyhow::Result<()>;
 }
 
 /// VM executor capable of executing isolated transactions / calls (as opposed to [batch execution](BatchExecutor)).
@@ -58,14 +64,6 @@ pub trait OneshotExecutor<S: ReadStorage> {
         args: TxExecutionArgs,
         tracing: OneshotTracingParams,
     ) -> anyhow::Result<OneshotTransactionExecutionResult>;
-
-    async fn inspect_transactions_with_bytecode_compression(
-        &self,
-        storage: S,
-        env: OneshotEnv,
-        args: Vec<TxExecutionArgs>,
-        tracing_params: OneshotTracingParams,
-    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>>;
 }
 
 /// VM executor capable of validating transactions.
@@ -79,4 +77,29 @@ pub trait TransactionValidator<S: ReadStorage> {
         tx: L2Tx,
         validation_params: ValidationParams,
     ) -> anyhow::Result<Result<ValidationTraces, ValidationError>>;
+}
+
+/// Generic transaction filter.
+// TODO: can be used for initiator allowlist
+#[async_trait]
+pub trait TransactionFilter: fmt::Debug + Send + Sync {
+    /// Performs checks on the provided transaction. Returns an error (a human-readable message) if the transaction execution
+    /// does not satisfy this filter.
+    async fn filter_transaction(
+        &self,
+        transaction: &Transaction,
+        metrics: &TransactionExecutionMetrics,
+    ) -> Result<(), String>;
+}
+
+/// Filter that always succeeds.
+#[async_trait]
+impl TransactionFilter for () {
+    async fn filter_transaction(
+        &self,
+        _transaction: &Transaction,
+        _metrics: &TransactionExecutionMetrics,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }

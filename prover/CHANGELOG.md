@@ -1,5 +1,86 @@
 # Changelog
 
+## [21.2.0](https://github.com/matter-labs/zksync-era/compare/prover-v21.1.0...prover-v21.2.0) (2025-07-03)
+
+
+### Features
+
+* **api:** Support Unix domain sockets for healthcheck server ([#4226](https://github.com/matter-labs/zksync-era/issues/4226)) ([b06bacb](https://github.com/matter-labs/zksync-era/commit/b06bacb3587150e997af0b0654bce48b04b6c177))
+* **config:** Report config params in more ways ([#4126](https://github.com/matter-labs/zksync-era/issues/4126)) ([a78531c](https://github.com/matter-labs/zksync-era/commit/a78531c3fb7f8a2d50a120ab6fbd282d1dd9dd28))
+* **config:** Support serde-style enums in config system ([#4055](https://github.com/matter-labs/zksync-era/issues/4055)) ([84eed67](https://github.com/matter-labs/zksync-era/commit/84eed672bc29d65d2d03e92ca543a4b795556de6))
+* **config:** Use native representation for duration params ([#4072](https://github.com/matter-labs/zksync-era/issues/4072)) ([1674906](https://github.com/matter-labs/zksync-era/commit/167490639795ae231b9e57e8453177a860f2c302))
+* **consensus:** Validator committee rotation ([#4014](https://github.com/matter-labs/zksync-era/issues/4014)) ([333efea](https://github.com/matter-labs/zksync-era/commit/333efea309e766c46a20e48868b7bbd0986910ec))
+* **en:** Use config system for env-based EN configuration ([#4104](https://github.com/matter-labs/zksync-era/issues/4104)) ([b706025](https://github.com/matter-labs/zksync-era/commit/b706025a454a24bfbe5f4ff4bcd067d308e07d84))
+* proof fri compressor service ([#3967](https://github.com/matter-labs/zksync-era/issues/3967)) ([c1ba032](https://github.com/matter-labs/zksync-era/commit/c1ba0324c750462d1244825594eb4badd3964e2d))
+* Prover Cluster follow-up [#2](https://github.com/matter-labs/zksync-era/issues/2) ([#4001](https://github.com/matter-labs/zksync-era/issues/4001)) ([d8ed7f7](https://github.com/matter-labs/zksync-era/commit/d8ed7f7a8a0244bfd3f2894a6cf915c9ea3c41a0))
+* **prover:** Add hysteresis for autoscaler targets for smoother scaling ([#4142](https://github.com/matter-labs/zksync-era/issues/4142)) ([97ae45d](https://github.com/matter-labs/zksync-era/commit/97ae45d6c3069680e84501a2c070ce426c63f02a))
+* SIGTERM handling in circuit-prover & compressor ([#4178](https://github.com/matter-labs/zksync-era/issues/4178)) ([f2f542e](https://github.com/matter-labs/zksync-era/commit/f2f542ebba39a02e00792bc46f080fe47f1a2f20))
+
+
+### Bug Fixes
+
+* **config:** Fix `max_response_body_size_overrides` deserialization ([#4165](https://github.com/matter-labs/zksync-era/issues/4165)) ([0c47b7b](https://github.com/matter-labs/zksync-era/commit/0c47b7b4bd627adc8857ec81edd0c70f8d26db83))
+* **config:** Fix parsing null values with units + other config fixes ([#4168](https://github.com/matter-labs/zksync-era/issues/4168)) ([506b458](https://github.com/matter-labs/zksync-era/commit/506b45844b280c1bd79c772fa8408d2ef3c1d3b9))
+* **consensus:** Update consensus dependencies ([#4186](https://github.com/matter-labs/zksync-era/issues/4186)) ([110a527](https://github.com/matter-labs/zksync-era/commit/110a527cd130a044a103134695a3fa2dab9269e9))
+* **prover:** Allow to run prover-autoscaler if several agents aren't available ([#4060](https://github.com/matter-labs/zksync-era/issues/4060)) ([9178bde](https://github.com/matter-labs/zksync-era/commit/9178bde6059ae3dd58c061dba08bda37772a6454))
+* **prover:** Calculate scale errors towards only affected pool ([#4134](https://github.com/matter-labs/zksync-era/issues/4134)) ([2326d43](https://github.com/matter-labs/zksync-era/commit/2326d439368a8e00ece2f5ada5bbd1819f5c21e5))
+* **prover:** Fixed loading setup for Compressor service  ([#4183](https://github.com/matter-labs/zksync-era/issues/4183)) ([53a25c0](https://github.com/matter-labs/zksync-era/commit/53a25c0b9875ade46f86e1888e82c0a769fc2d71))
+* **prover:** Handling SIGTERM to cancel all inits ([#4184](https://github.com/matter-labs/zksync-era/issues/4184)) ([2e3c819](https://github.com/matter-labs/zksync-era/commit/2e3c81924170f4b5e263269d96846aaded15327b))
+* **prover:** Improve autoscaler hysteresis logic ([#4199](https://github.com/matter-labs/zksync-era/issues/4199)) ([96877cf](https://github.com/matter-labs/zksync-era/commit/96877cf532213fa799018dcb55336f32b9d59ba1))
+* **prover:** Remove all pods if queue is 0 ([#4203](https://github.com/matter-labs/zksync-era/issues/4203)) ([0582795](https://github.com/matter-labs/zksync-era/commit/0582795a968230f2f8d247ab61303ce423811a6f))
+* **prover:** Use unified prometheus initialization ([#4173](https://github.com/matter-labs/zksync-era/issues/4173)) ([db4f036](https://github.com/matter-labs/zksync-era/commit/db4f036a5c4fd450178d709793a62ddca43f54ec))
+* **prover:** Use unified Prometheus initialization in gateway and job monitor ([#4191](https://github.com/matter-labs/zksync-era/issues/4191)) ([f93704e](https://github.com/matter-labs/zksync-era/commit/f93704eb9e91660b30905577585f59cfb90cd13b))
+* Remove increasing priority of jobs when it gets requeued ([#4106](https://github.com/matter-labs/zksync-era/issues/4106)) ([44fab29](https://github.com/matter-labs/zksync-era/commit/44fab291e6860effb24b12713a60f666d3654bc4))
+
+
+### Performance Improvements
+
+* Instrumentation for Jemalloc (pt. 2) ([#4204](https://github.com/matter-labs/zksync-era/issues/4204)) ([5e0bd65](https://github.com/matter-labs/zksync-era/commit/5e0bd65042aeebef57e5d977f315b05f6b75f44f))
+
+## [21.1.0](https://github.com/matter-labs/zksync-era/compare/prover-v21.0.0...prover-v21.1.0) (2025-05-22)
+
+
+### Features
+
+* Configuration system PoC ([#3851](https://github.com/matter-labs/zksync-era/issues/3851)) ([7b449c2](https://github.com/matter-labs/zksync-era/commit/7b449c216aa250cf99bb79e69df810f566dcc28a))
+* **prover:** Autoscaler detect which pod out of resources and reschedule ([#4008](https://github.com/matter-labs/zksync-era/issues/4008)) ([56658c8](https://github.com/matter-labs/zksync-era/commit/56658c89f83f3d6c188df5c1944ac9f9a7307ef9))
+
+
+### Bug Fixes
+
+* Prefix env vars for `zksync_server` ([#4039](https://github.com/matter-labs/zksync-era/issues/4039)) ([3b2dd70](https://github.com/matter-labs/zksync-era/commit/3b2dd70e858312d1709b8ac64a651f4f7f806e05))
+* **prover:** Fix revert GPU prover table migration ([#4047](https://github.com/matter-labs/zksync-era/issues/4047)) ([764e73c](https://github.com/matter-labs/zksync-era/commit/764e73c92ea737e19e8d6f5903df587413ed79a7))
+* **vm:** update deps ([#4019](https://github.com/matter-labs/zksync-era/issues/4019)) ([2b51c6d](https://github.com/matter-labs/zksync-era/commit/2b51c6df08b45cc41fd6b4d930c31670d004a93d))
+* **vm:** update v27 ([#4035](https://github.com/matter-labs/zksync-era/issues/4035)) ([b7aeab6](https://github.com/matter-labs/zksync-era/commit/b7aeab64ce5c915233a773542ef64e79bf3893ee))
+
+## [21.0.0](https://github.com/matter-labs/zksync-era/compare/prover-v20.3.1...prover-v21.0.0) (2025-05-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* update zksync-protocol and zksync-crypto-gpu deps ([#3948](https://github.com/matter-labs/zksync-era/issues/3948))
+
+### Features
+
+* Add Support for Protocol Version v28 ([#3821](https://github.com/matter-labs/zksync-era/issues/3821)) ([5419420](https://github.com/matter-labs/zksync-era/commit/5419420e23a3c083187065219a0722179dab0419))
+* bump rustc to `nightly-2025-03-19` ([#3985](https://github.com/matter-labs/zksync-era/issues/3985)) ([d27390e](https://github.com/matter-labs/zksync-era/commit/d27390e14a586de7dccb974a0cb54352de3536b3))
+* update zksync-protocol and zksync-crypto-gpu deps ([#3948](https://github.com/matter-labs/zksync-era/issues/3948)) ([1ddf85a](https://github.com/matter-labs/zksync-era/commit/1ddf85a14b6a54ce926482eafc84ef0979c9afd3))
+
+
+### Bug Fixes
+
+* Join on chain_id in WG queries ([#3950](https://github.com/matter-labs/zksync-era/issues/3950)) ([0975a88](https://github.com/matter-labs/zksync-era/commit/0975a8887c13698f7682be641cc5f0762ce7c146))
+* number of chunks for inserting prover jobs ([#3952](https://github.com/matter-labs/zksync-era/issues/3952)) ([5c59a11](https://github.com/matter-labs/zksync-era/commit/5c59a1192f8c0e68b4a2ab8a75390aceff5c413e))
+* **prover:** Check pods list for stale ones every `pod_check_interval` ([#3982](https://github.com/matter-labs/zksync-era/issues/3982)) ([0bc1e46](https://github.com/matter-labs/zksync-era/commit/0bc1e46d710aea254f8005993ffca345b5aa3868))
+
+## [20.3.1](https://github.com/matter-labs/zksync-era/compare/prover-v20.3.0...prover-v20.3.1) (2025-05-02)
+
+
+### Bug Fixes
+
+* Fix issue with EVM bytecodes not being stored in DB ([#3928](https://github.com/matter-labs/zksync-era/issues/3928)) ([0e8f1da](https://github.com/matter-labs/zksync-era/commit/0e8f1dacb27be3b33aaabf842ea4350e20a3cada))
+* **prover:** Scale down replicas using correct speed for queue calculation ([#3926](https://github.com/matter-labs/zksync-era/issues/3926)) ([868d6dc](https://github.com/matter-labs/zksync-era/commit/868d6dc96806276ce1d9b97f434febac46838dcc))
+
 ## [20.3.0](https://github.com/matter-labs/zksync-era/compare/prover-v20.2.0...prover-v20.3.0) (2025-04-30)
 
 

@@ -13,6 +13,7 @@ impl SealCriterion for L2L1LogsCriterion {
         config: &StateKeeperConfig,
         _tx_count: usize,
         _l1_tx_count: usize,
+        _interop_roots_count: usize,
         block_data: &SealData,
         tx_data: &SealData,
         protocol_version_id: ProtocolVersionId,
@@ -41,6 +42,7 @@ impl SealCriterion for L2L1LogsCriterion {
         _config: &StateKeeperConfig,
         _tx_count: usize,
         _l1_tx_count: usize,
+        _interop_roots_count: usize,
         block_data: &SealData,
         protocol_version: ProtocolVersionId,
     ) -> Option<f64> {
@@ -72,6 +74,7 @@ mod tests {
             config,
             0,
             0,
+            0,
             &SealData {
                 execution_metrics: VmExecutionMetrics {
                     user_l2_to_l1_logs: block_data_logs,
@@ -96,7 +99,7 @@ mod tests {
         let config = StateKeeperConfig {
             close_block_at_geometry_percentage: 0.95,
             reject_tx_at_geometry_percentage: 0.9,
-            ..Default::default()
+            ..StateKeeperConfig::for_tests()
         };
 
         let reject_bound =
