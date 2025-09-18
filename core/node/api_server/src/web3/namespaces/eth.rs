@@ -246,7 +246,11 @@ impl EthNamespace {
         );
         let mut connection = self.state.acquire_connection().await?;
         if request.gas.is_none() {
-            request.gas = Some(block_args.default_eth_call_gas(&mut connection).await?);
+            request.gas = Some(
+                block_args
+                    .default_eth_call_gas(&mut connection, self.state.api_config.eth_call_gas_cap)
+                    .await?,
+            );
         }
         drop(connection);
         let call_overrides = request.get_call_overrides()?;
@@ -255,7 +259,8 @@ impl EthNamespace {
             .state
             .tx_sender
             .eth_call_raw(block_args, call_overrides, tx, None)
-            .await?;
+            .await
+            .map_err(|err| self.current_method().map_submit_err(err))?;
         match call_result.result {
             ExecutionResult::Success { output } => {
                 let resp = CallResult {

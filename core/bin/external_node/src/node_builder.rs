@@ -54,7 +54,7 @@ use zksync_settlement_layer_data::{ENConfig, SettlementLayerData};
 use zksync_state::RocksdbStorageOptions;
 use zksync_state_keeper::node::{MainBatchExecutorLayer, OutputHandlerLayer, StateKeeperLayer};
 use zksync_types::L1BatchNumber;
-use zksync_vlog::node::{PrometheusExporterLayer, SigintHandlerLayer};
+use zksync_vlog::node::{PrometheusExporterLayer, SigintHandlerLayer, SigtermHandlerLayer};
 use zksync_web3_decl::node::{MainNodeClientLayer, QueryEthClientLayer};
 
 use crate::{config::ExternalNodeConfig, metrics::framework::ExternalNodeMetricsLayer, Component};
@@ -84,6 +84,11 @@ impl ExternalNodeBuilder {
 
     fn add_sigint_handler_layer(mut self) -> anyhow::Result<Self> {
         self.node.add_layer(SigintHandlerLayer);
+        Ok(self)
+    }
+
+    fn add_sigterm_handler_layer(mut self) -> anyhow::Result<Self> {
+        self.node.add_layer(SigtermHandlerLayer);
         Ok(self)
     }
 
@@ -596,6 +601,7 @@ impl ExternalNodeBuilder {
         // Add "base" layers
         self = self
             .add_sigint_handler_layer()?
+            .add_sigterm_handler_layer()?
             .add_healthcheck_layer()?
             .add_prometheus_exporter_layer()?
             .add_pools_layer()?

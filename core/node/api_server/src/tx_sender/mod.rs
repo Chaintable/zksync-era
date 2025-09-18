@@ -1,7 +1,6 @@
 //! Helper module to submit transactions into the ZKsync Network.
 
 use std::{
-    collections::HashSet,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -13,7 +12,7 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use serde::Serialize;
 use tokio::sync::RwLock;
-use zksync_config::configs::{api::Web3JsonRpcConfig, chain::StateKeeperConfig, TxSinkConfig};
+use zksync_config::configs::{api::Web3JsonRpcConfig, chain::StateKeeperConfig};
 use zksync_dal::{
     transactions_dal::L2TxSubmissionResult, Connection, ConnectionPool, Core, CoreDal,
 };
@@ -45,17 +44,13 @@ use zksync_vm_executor::{
     oneshot::{CallOrExecute, EstimateGas, MultiVmBaseSystemContracts, OneshotEnvParameters},
 };
 
-use self::{
-    deny_list_pool_sink::DenyListPoolSink, master_pool_sink::MasterPoolSink, result::ApiCallResult,
-    tx_sink::TxSink,
-};
 pub(super) use self::{gas_estimation::BinarySearchKind, result::SubmitTxError};
+use self::{master_pool_sink::MasterPoolSink, result::ApiCallResult, tx_sink::TxSink};
 use crate::execution_sandbox::{
     BlockArgs, SandboxAction, SandboxExecutionOutput, SandboxExecutor, SubmitTxStage,
     VmConcurrencyBarrier, VmConcurrencyLimiter, SANDBOX_METRICS,
 };
 
-pub mod deny_list_pool_sink;
 mod gas_estimation;
 pub mod master_pool_sink;
 pub mod proxy;
@@ -64,13 +59,6 @@ mod result;
 pub(crate) mod tests;
 pub mod tx_sink;
 pub mod whitelist;
-
-pub struct TxSenderBuilderConfigs {
-    pub tx_sender_config: TxSenderConfig,
-    pub web3_json_config: Web3JsonRpcConfig,
-    pub state_keeper_config: StateKeeperConfig,
-    pub tx_sink_config: Option<TxSinkConfig>,
-}
 
 pub async fn build_tx_sender(
     tx_sender_config: &TxSenderConfig,
@@ -96,11 +84,9 @@ pub async fn build_tx_sender(
         web3_json_config.gas_price_scale_factor_open_batch,
     );
     let executor_options = SandboxExecutorOptions::new(
-        builder_config.tx_sender_config.chain_id,
-        AccountTreeId::new(builder_config.tx_sender_config.fee_account_addr),
-        builder_config
-            .tx_sender_config
-            .validation_computational_gas_limit,
+        tx_sender_config.chain_id,
+        AccountTreeId::new(tx_sender_config.fee_account_addr),
+        tx_sender_config.validation_computational_gas_limit,
     )
     .await?;
     let tx_sender = tx_sender_builder.build(

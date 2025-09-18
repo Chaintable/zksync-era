@@ -1,12 +1,15 @@
 use zksync_types::{
-    api::{BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, TracerConfig, TransactionReceipt, PreResult, OpenEthActionTrace},
+    api::{
+        BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, OpenEthActionTrace,
+        PreResult, TracerConfig,
+    },
     transaction_request::CallRequest,
     web3::Bytes,
     H256,
 };
 use zksync_web3_decl::{
     jsonrpsee::core::{async_trait, RpcResult},
-    namespaces::{DebugNamespaceServer, PreNamespaceServer, TraceNamespaceServer}
+    namespaces::{DebugNamespaceServer, PreNamespaceServer, TraceNamespaceServer},
 };
 
 use crate::web3::namespaces::DebugNamespace;

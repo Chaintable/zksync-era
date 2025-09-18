@@ -71,8 +71,6 @@ pub enum SubmitTxError {
     Internal(#[from] anyhow::Error),
     #[error("contract deployer address {0} is not in the allow list")]
     DeployerNotInAllowList(Address),
-    #[error("sender address {0} is in deny list")]
-    SenderInDenyList(Address),
 }
 
 impl SubmitTxError {
@@ -104,7 +102,6 @@ impl SubmitTxError {
             Self::ProxyError(_) => "proxy-error",
             Self::Internal(_) => "internal",
             Self::DeployerNotInAllowList(_) => "deployer-not-in-allow-list",
-            Self::SenderInDenyList(_) => "sender-in-deny-list",
         }
     }
 

@@ -20,7 +20,7 @@ use zksync_multivm::{
         tracer::TimestampAsserterParams,
         utils::{DivergenceHandler, VmDump},
         Call, DeduplicatedWritesMetrics, ExecutionResult, OneshotEnv, OneshotTracingParams,
-        TransactionExecutionMetrics, TxExecutionArgs, VmEvent, VmExecutionResultAndLogs,
+        TransactionExecutionMetrics, TxExecutionArgs, VmEvent,
     },
     utils::StorageWritesDeduplicator,
 };
@@ -329,33 +329,6 @@ impl SandboxExecutor {
             .await
     }
 
-    pub async fn execute_txs_in_sandbox(
-        &self,
-        vm_permit: VmPermit,
-        execution_args: Vec<TxExecutionArgs>,
-        connection: Connection<'static, Core>,
-        action: SandboxAction,
-        block_args: BlockArgs,
-        state_override: Option<StateOverride>,
-    ) -> anyhow::Result<Vec<(VmExecutionResultAndLogs, Vec<Call>)>> {
-        let (env, storage) = self
-            .prepare_env_and_storage(connection, &block_args, &action)
-            .await?;
-        let state_override = state_override.unwrap_or_default();
-        let storage = apply_state_override(storage, state_override);
-        let (_, tracing_params) = action.into_parts();
-        let res = self
-            .engine
-            .inspect_transactions_with_bytecode_compression(
-                storage,
-                env,
-                execution_args,
-                tracing_params,
-            )
-            .await;
-        drop(vm_permit);
-        res
-    }
     pub(super) async fn prepare_env_and_storage(
         &self,
         mut connection: Connection<'static, Core>,
