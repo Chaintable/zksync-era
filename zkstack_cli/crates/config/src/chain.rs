@@ -7,22 +7,26 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize, Serializer};
 use xshell::Shell;
 use zkstack_cli_common::files::find_file;
-use zkstack_cli_types::{BaseToken, L1BatchCommitmentMode, L1Network, ProverMode, WalletCreation};
+use zkstack_cli_types::{
+    BaseToken, L1BatchCommitmentMode, L1Network, ProverMode, VMOption, WalletCreation,
+};
 use zksync_basic_types::L2ChainId;
 
 use crate::{
     consts::{
-        CONFIG_NAME, CONTRACTS_FILE, EN_CONFIG_FILE, GENERAL_FILE, GENESIS_FILE,
-        L1_CONTRACTS_FOUNDRY, SECRETS_FILE, WALLETS_FILE,
+        CONFIG_NAME, CONTRACTS_FILE, CONTRACTS_PATH, EN_CONFIG_FILE, ERA_VM_GENESIS_FILE,
+        GENERAL_FILE, L1_CONTRACTS_FOUNDRY_INSIDE_CONTRACTS, SECRETS_FILE, WALLETS_FILE,
     },
     create_localhost_wallets,
     gateway::GatewayConfig,
+    source_files::SourceFiles,
     traits::{
-        FileConfigWithDefaultName, ReadConfig, ReadConfigWithBasePath, SaveConfig,
-        SaveConfigWithBasePath, ZkStackConfigTrait,
+        FileConfigTrait, FileConfigWithDefaultName, ReadConfig, ReadConfigWithBasePath, SaveConfig,
+        SaveConfigWithBasePath,
     },
     ContractsConfig, EcosystemConfig, GatewayChainConfig, GeneralConfig, GenesisConfig,
-    SecretsConfig, WalletsConfig, GATEWAY_CHAIN_FILE,
+    SecretsConfig, WalletsConfig, ZkStackConfigTrait, CONFIGS_PATH, GATEWAY_CHAIN_FILE,
+    ZKSYNC_OS_GENESIS_FILE,
 };
 
 /// Chain configuration file. This file is created in the chain
@@ -50,6 +54,11 @@ pub struct ChainConfigInternal {
     pub evm_emulator: bool,
     #[serde(default)] // for backward compatibility
     pub tight_ports: bool,
+    #[serde(default)] // for backward compatibility
+    pub vm_option: VMOption,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(flatten)]
+    source_files: Option<SourceFiles>,
 }
 
 /// Chain configuration file. This file is created in the chain
@@ -61,8 +70,6 @@ pub struct ChainConfig {
     pub chain_id: L2ChainId,
     pub prover_version: ProverMode,
     pub l1_network: L1Network,
-    pub self_path: PathBuf,
-    pub link_to_code: PathBuf,
     pub rocks_db_path: PathBuf,
     pub artifacts: PathBuf,
     pub configs: PathBuf,
@@ -70,10 +77,14 @@ pub struct ChainConfig {
     pub l1_batch_commit_data_generator_mode: L1BatchCommitmentMode,
     pub base_token: BaseToken,
     pub wallet_creation: WalletCreation,
-    pub shell: OnceCell<Shell>,
     pub legacy_bridge: Option<bool>,
     pub evm_emulator: bool,
     pub tight_ports: bool,
+    pub vm_option: VMOption,
+    shell: OnceCell<Shell>,
+    self_path: PathBuf,
+    link_to_code: PathBuf,
+    source_files: Option<SourceFiles>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +104,53 @@ impl Serialize for ChainConfig {
 }
 
 impl ChainConfig {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: u32,
+        name: String,
+        chain_id: L2ChainId,
+        prover_version: ProverMode,
+        l1_network: L1Network,
+        self_path: PathBuf,
+        link_to_code: PathBuf,
+        rocks_db_path: PathBuf,
+        artifacts: PathBuf,
+        configs: PathBuf,
+        external_node_config_path: Option<PathBuf>,
+        l1_batch_commit_data_generator_mode: L1BatchCommitmentMode,
+        base_token: BaseToken,
+        wallet_creation: WalletCreation,
+        shell: OnceCell<Shell>,
+        legacy_bridge: Option<bool>,
+        evm_emulator: bool,
+        tight_ports: bool,
+        vm_option: VMOption,
+        source_files: Option<SourceFiles>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            chain_id,
+            prover_version,
+            l1_network,
+            self_path,
+            link_to_code,
+            rocks_db_path,
+            artifacts,
+            configs,
+            external_node_config_path,
+            l1_batch_commit_data_generator_mode,
+            base_token,
+            wallet_creation,
+            shell,
+            legacy_bridge,
+            evm_emulator,
+            tight_ports,
+            vm_option,
+            source_files,
+        }
+    }
+
     pub(crate) fn get_shell(&self) -> &Shell {
         self.shell.get().expect("Not initialized")
     }
@@ -116,10 +174,6 @@ impl ChainConfig {
             return Ok(wallets);
         }
         anyhow::bail!("Wallets configs has not been found");
-    }
-
-    pub fn get_preexisting_ecosystem_contracts_path(&self) -> PathBuf {
-        todo!()
     }
 
     pub fn get_contracts_config(&self) -> anyhow::Result<ContractsConfig> {
@@ -147,7 +201,10 @@ impl ChainConfig {
     }
 
     pub fn path_to_genesis_config(&self) -> PathBuf {
-        self.configs.join(GENESIS_FILE)
+        match self.vm_option {
+            VMOption::EraVM => self.configs.join(ERA_VM_GENESIS_FILE),
+            VMOption::ZKSyncOsVM => self.configs.join(ZKSYNC_OS_GENESIS_FILE),
+        }
     }
 
     pub fn path_to_contracts_config(&self) -> PathBuf {
@@ -160,10 +217,6 @@ impl ChainConfig {
 
     pub fn path_to_gateway_chain_config(&self) -> PathBuf {
         self.configs.join(GATEWAY_CHAIN_FILE)
-    }
-
-    pub fn path_to_l1_foundry(&self) -> PathBuf {
-        self.link_to_code.join(L1_CONTRACTS_FOUNDRY)
     }
 
     pub fn save(&self, shell: &Shell, path: impl AsRef<Path>) -> anyhow::Result<()> {
@@ -199,6 +252,8 @@ impl ChainConfig {
             legacy_bridge: self.legacy_bridge,
             evm_emulator: self.evm_emulator,
             tight_ports: self.tight_ports,
+            vm_option: self.vm_option,
+            source_files: self.source_files.clone(),
         }
     }
     pub(crate) fn from_internal(
@@ -232,6 +287,8 @@ impl ChainConfig {
             tight_ports: chain_internal.tight_ports,
             self_path: shell.current_dir(),
             shell: shell.into(),
+            vm_option: chain_internal.vm_option,
+            source_files: chain_internal.source_files,
         })
     }
 }
@@ -262,4 +319,31 @@ impl FileConfigWithDefaultName for ChainConfigInternal {
     const FILE_NAME: &'static str = CONFIG_NAME;
 }
 
-impl ZkStackConfigTrait for ChainConfigInternal {}
+impl FileConfigTrait for ChainConfigInternal {}
+
+impl ZkStackConfigTrait for ChainConfig {
+    fn link_to_code(&self) -> PathBuf {
+        self.link_to_code.clone()
+    }
+
+    fn default_configs_path(&self) -> PathBuf {
+        if let Some(sources) = &self.source_files {
+            sources.default_configs_path.clone()
+        } else {
+            self.link_to_code().join(CONFIGS_PATH)
+        }
+    }
+
+    fn contracts_path(&self) -> PathBuf {
+        if let Some(sources) = &self.source_files {
+            sources.contracts_path.clone()
+        } else {
+            self.link_to_code().join(CONTRACTS_PATH)
+        }
+    }
+
+    fn path_to_foundry_scripts(&self) -> PathBuf {
+        self.contracts_path()
+            .join(L1_CONTRACTS_FOUNDRY_INSIDE_CONTRACTS)
+    }
+}

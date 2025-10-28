@@ -9,6 +9,7 @@ use xshell::Shell;
 use zkstack_cli_common::{
     ethereum::get_zk_client, logger, wallets::Wallet, zks_provider::ZKSProvider,
 };
+use zkstack_cli_config::{ZkStackConfig, ZkStackConfigTrait};
 use zksync_types::L2_BRIDGEHUB_ADDRESS;
 
 use super::{
@@ -19,7 +20,6 @@ use super::{
     messages::message_for_gateway_migration_progress_state,
     migrate_from_gateway::finish_migrate_chain_from_gateway,
 };
-use crate::commands::chain::utils::get_default_foundry_path;
 
 lazy_static! {
     static ref GATEWAY_UTILS_INTERFACE: BaseContract = BaseContract::from(
@@ -49,7 +49,7 @@ pub struct FinalizeChainMigrationFromGatewayArgs {
     pub l2_rpc_url: Option<String>,
     /// Whether to force providing the full migration calldata even if the chain
     /// isn't strictly ready for final calls.
-    #[clap(long, default_missing_value = "false")]
+    #[clap(long, default_missing_value = "true")]
     pub no_cross_check: bool,
 }
 
@@ -99,11 +99,12 @@ pub async fn run(
     let withdrawal_params = gateway_zk_client
         .get_finalize_withdrawal_params(migraiton_tx, 0)
         .await?;
+    let foundry_contracts_path = ZkStackConfig::from_file(shell)?.path_to_foundry_scripts();
 
     finish_migrate_chain_from_gateway(
         shell,
         Default::default(),
-        &get_default_foundry_path(shell)?,
+        &foundry_contracts_path,
         Wallet::new(
             params
                 .private_key

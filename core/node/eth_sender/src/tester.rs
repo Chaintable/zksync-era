@@ -256,6 +256,7 @@ impl EthSenderTester {
                 },
                 pubdata_sending_mode,
                 commitment_mode,
+                connection_pool.clone(),
             )
             .await
             .unwrap(),
@@ -556,6 +557,7 @@ impl EthSenderTester {
                 Address::random(),
                 ProtocolVersionId::latest(),
                 self.settlement_layer.is_gateway(),
+                false,
             )
             .await
             .unwrap()

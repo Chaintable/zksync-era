@@ -2,11 +2,9 @@ use std::path::PathBuf;
 
 use anyhow::bail;
 use xshell::Shell;
+use zkstack_cli_types::VMOption;
 
-use crate::{
-    consts::L1_CONTRACTS_FOUNDRY, ChainConfig, ChainConfigInternal, EcosystemConfig,
-    EcosystemConfigFromFileError,
-};
+use crate::{ChainConfig, ChainConfigInternal, EcosystemConfig, EcosystemConfigFromFileError};
 
 pub enum ZkStackConfig {
     EcosystemConfig(EcosystemConfig),
@@ -40,14 +38,57 @@ impl ZkStackConfig {
     pub fn ecosystem(shell: &Shell) -> Result<EcosystemConfig, EcosystemConfigFromFileError> {
         EcosystemConfig::from_file(shell)
     }
+}
 
-    pub fn link_to_code(&self) -> PathBuf {
+impl ZkStackConfigTrait for ZkStackConfig {
+    fn link_to_code(&self) -> PathBuf {
         match self {
-            ZkStackConfig::EcosystemConfig(ecosystem) => ecosystem.link_to_code.clone(),
-            ZkStackConfig::ChainConfig(chain) => chain.link_to_code.clone(),
+            ZkStackConfig::EcosystemConfig(ecosystem) => ecosystem.link_to_code(),
+            ZkStackConfig::ChainConfig(chain) => chain.link_to_code().clone(),
         }
     }
-    pub fn path_to_l1_foundry(&self) -> PathBuf {
-        self.link_to_code().join(L1_CONTRACTS_FOUNDRY)
+
+    fn default_configs_path(&self) -> PathBuf {
+        match self {
+            ZkStackConfig::EcosystemConfig(ecosystem) => ecosystem
+                // For default zksync config files we use default paths to foundry scripts
+                .default_configs_path_for_ctm(VMOption::EraVM)
+                .clone(),
+            ZkStackConfig::ChainConfig(chain) => chain.default_configs_path().clone(),
+        }
     }
+
+    fn contracts_path(&self) -> PathBuf {
+        match self {
+            ZkStackConfig::EcosystemConfig(ecosystem) => {
+                // For default zksync config files we use default paths to foundry scripts
+                ecosystem.contracts_path_for_ctm(VMOption::EraVM)
+            }
+            ZkStackConfig::ChainConfig(chain) => chain.contracts_path(),
+        }
+    }
+
+    fn path_to_foundry_scripts(&self) -> PathBuf {
+        match self {
+            ZkStackConfig::EcosystemConfig(ecosystem) => {
+                // For default zksync config files we use default paths to foundry scripts
+                ecosystem.path_to_foundry_scripts_for_ctm(VMOption::EraVM)
+            }
+            ZkStackConfig::ChainConfig(chain) => chain.path_to_foundry_scripts().clone(),
+        }
+    }
+}
+
+pub trait ZkStackConfigTrait {
+    /// Link to the repository, please use it with a caution and prefer specific links
+    fn link_to_code(&self) -> PathBuf;
+
+    /// Path to the directory with default configs inside the repository.
+    /// It's the configs, that used as templates for new chains, in era they are placed `etc/env/file_based`
+    fn default_configs_path(&self) -> PathBuf;
+    /// Path to the directory with contracts, that represents era-contracts repo
+    fn contracts_path(&self) -> PathBuf;
+
+    /// Path to the directory with L1 Foundry contracts
+    fn path_to_foundry_scripts(&self) -> PathBuf;
 }
