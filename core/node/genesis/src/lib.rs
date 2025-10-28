@@ -5,6 +5,7 @@
 use std::{collections::HashMap, fmt::Formatter};
 
 use anyhow::Context as _;
+use kzg::ZK_SYNC_BYTES_PER_BLOB;
 use zksync_config::GenesisConfig;
 use zksync_contracts::{
     hyperchain_contract, verifier_contract, BaseSystemContracts, BaseSystemContractsHashes,
@@ -73,6 +74,8 @@ pub enum GenesisError {
     Other(#[from] anyhow::Error),
     #[error("Field: {0} required for genesis")]
     MalformedConfig(&'static str),
+    #[error("Commitment validation error: {0}")]
+    CommitmentValidation(#[from] zksync_types::commitment::CommitmentValidationError),
 }
 
 #[derive(Debug, Clone)]
@@ -190,7 +193,7 @@ pub fn make_genesis_batch_params(
     deduped_log_queries: Vec<LogQuery>,
     base_system_contract_hashes: BaseSystemContractsHashes,
     protocol_version: ProtocolVersionId,
-) -> (GenesisBatchParams, L1BatchCommitment) {
+) -> Result<(GenesisBatchParams, L1BatchCommitment), GenesisError> {
     let storage_logs = deduped_log_queries
         .into_iter()
         .filter(|log_query| log_query.rw_flag) // only writes
@@ -215,17 +218,17 @@ pub fn make_genesis_batch_params(
         base_system_contract_hashes,
         protocol_version,
     );
-    let block_commitment = L1BatchCommitment::new(commitment_input);
-    let commitment = block_commitment.hash().commitment;
+    let block_commitment = L1BatchCommitment::new(commitment_input, true)?;
+    let commitment = block_commitment.hash()?.commitment;
 
-    (
+    Ok((
         GenesisBatchParams {
             root_hash,
             commitment,
             rollup_last_leaf_index,
         },
         block_commitment,
-    )
+    ))
 }
 
 pub async fn insert_genesis_batch_with_custom_state(
@@ -296,7 +299,7 @@ pub async fn insert_genesis_batch_with_custom_state(
         deduped_log_queries,
         base_system_contract_hashes,
         genesis_params.minor_protocol_version(),
-    );
+    )?;
 
     save_genesis_l1_batch_metadata(
         &mut transaction,
@@ -518,7 +521,14 @@ pub(crate) async fn create_genesis_l1_batch_from_storage_logs_and_factory_deps(
         .await?;
     transaction
         .blocks_dal()
-        .mark_l1_batch_as_sealed(&genesis_l1_batch_header, &[], &[], &[], Default::default())
+        .mark_l1_batch_as_sealed(
+            &genesis_l1_batch_header,
+            &[],
+            &[],
+            &[],
+            Default::default(),
+            ZK_SYNC_BYTES_PER_BLOB as u64,
+        )
         .await?;
     transaction
         .blocks_dal()

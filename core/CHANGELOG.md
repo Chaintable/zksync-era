@@ -1,5 +1,75 @@
 # Changelog
 
+## [29.5.0](https://github.com/matter-labs/zksync-era/compare/core-v29.4.1...core-v29.5.0) (2025-10-16)
+
+
+### Features
+
+* add support for eip-7594 blob format ([#4542](https://github.com/matter-labs/zksync-era/issues/4542)) ([b57d6f6](https://github.com/matter-labs/zksync-era/commit/b57d6f6eb2c908692f356f584a8e3b0158ef2969))
+* adds l1_batch_number to zks_get_l2l1_logproof ([#4530](https://github.com/matter-labs/zksync-era/issues/4530)) ([004dcdc](https://github.com/matter-labs/zksync-era/commit/004dcdcf1fa21578798b90b58a2d6c3f1af0ff50))
+* **zkstack:** Deploy 2 ctms and deploy chain for each of them   ([#4458](https://github.com/matter-labs/zksync-era/issues/4458)) ([5d2a7cd](https://github.com/matter-labs/zksync-era/commit/5d2a7cd393f728b15e6e0b6b3fdee500e1ccd217))
+
+
+### Bug Fixes
+
+* **eth_sender:** refactor support for eip7594 ([#4543](https://github.com/matter-labs/zksync-era/issues/4543)) ([462849a](https://github.com/matter-labs/zksync-era/commit/462849aa904dc84db05307c5e05d9e20c173a89d))
+
+## [29.4.1](https://github.com/matter-labs/zksync-era/compare/core-v29.4.0...core-v29.4.1) (2025-09-29)
+
+
+### Bug Fixes
+
+* **en:** add index for fetching precommits ([#4517](https://github.com/matter-labs/zksync-era/issues/4517)) ([5db1a92](https://github.com/matter-labs/zksync-era/commit/5db1a9291a83cd9518d89049de131773ab78401f))
+* **en:** Fix statement timeout errors during cache recovery ([#4248](https://github.com/matter-labs/zksync-era/issues/4248)) ([67a9b82](https://github.com/matter-labs/zksync-era/commit/67a9b82125e3e3742b9a1096fa0c2493279d2251))
+* **eth_watcher:** Do not process upgrades if it's already processed ([#4506](https://github.com/matter-labs/zksync-era/issues/4506)) ([f71cc00](https://github.com/matter-labs/zksync-era/commit/f71cc008d1068ad49d510e0d8619a2bfd3a137fa))
+
+## [29.4.0](https://github.com/matter-labs/zksync-era/compare/core-v29.3.0...core-v29.4.0) (2025-09-24)
+
+
+### Features
+
+* Bump dependencies ([#4495](https://github.com/matter-labs/zksync-era/issues/4495)) ([c27fe90](https://github.com/matter-labs/zksync-era/commit/c27fe90c5f6eab98ab2c1349e9f1017ad62a75d6))
+
+
+### Bug Fixes
+
+* **upgrades:** Read all skipped events  ([#4504](https://github.com/matter-labs/zksync-era/issues/4504)) ([1de5f63](https://github.com/matter-labs/zksync-era/commit/1de5f63633bf60e0da802d15ae8133b2effc5260))
+
+## [29.3.0](https://github.com/matter-labs/zksync-era/compare/core-v29.2.0...core-v29.3.0) (2025-09-18)
+
+
+### Features
+
+* **en:** Check commitment allonside with roothashes ([#4492](https://github.com/matter-labs/zksync-era/issues/4492)) ([6e8f526](https://github.com/matter-labs/zksync-era/commit/6e8f526fa87350829ef8d56ee4edf0dfa1421a80))
+* **en:** Improved en commitment generation error handling ([#4483](https://github.com/matter-labs/zksync-era/issues/4483)) ([1bb82d6](https://github.com/matter-labs/zksync-era/commit/1bb82d6a1cf5c8ed357a6387f371f08415516358))
+
+
+### Bug Fixes
+
+* **en:** Add check for commitment in diverged batch ([#4493](https://github.com/matter-labs/zksync-era/issues/4493)) ([e693fd0](https://github.com/matter-labs/zksync-era/commit/e693fd0ec83eac6d227b083a3be9c0437b0eb351))
+* **en:** allow to disable sanity checks for commitment generation ([#4487](https://github.com/matter-labs/zksync-era/issues/4487)) ([7692f31](https://github.com/matter-labs/zksync-era/commit/7692f319ad7ef7934532f0480aafcabf18837339))
+* **EN:** properly set chain_id for old batch transactions ([#4488](https://github.com/matter-labs/zksync-era/issues/4488)) ([634b6dd](https://github.com/matter-labs/zksync-era/commit/634b6dd5cf0d65c689cd3021d33adc9980aa82d0))
+* **eth-proof-manager:** don't fail component if proof was incorrect ([#4444](https://github.com/matter-labs/zksync-era/issues/4444)) ([daa1161](https://github.com/matter-labs/zksync-era/commit/daa11611032350e67b44ad56bd8d7181bc15af4a))
+* **eth-proof-manager:** verify protocol version and proving mode alignment ([#4473](https://github.com/matter-labs/zksync-era/issues/4473)) ([99e0423](https://github.com/matter-labs/zksync-era/commit/99e0423a3dc78794e4addec948c785ffcb2ca94f))
+* **eth-sender:** Fix selector for old batches ([#4489](https://github.com/matter-labs/zksync-era/issues/4489)) ([bb42dcf](https://github.com/matter-labs/zksync-era/commit/bb42dcf781939a9363414703d6a77adcc97adb68))
+
+## [29.2.0](https://github.com/matter-labs/zksync-era/compare/core-v29.1.2...core-v29.2.0) (2025-09-01)
+
+
+### Features
+
+* **en:** seal criteria ([#4429](https://github.com/matter-labs/zksync-era/issues/4429)) ([3d02076](https://github.com/matter-labs/zksync-era/commit/3d02076d8bcea94e56c9f7e579b0897feae18358))
+* **eth_sender:** Properly calculate  blob price  ([#4406](https://github.com/matter-labs/zksync-era/issues/4406)) ([a8e5952](https://github.com/matter-labs/zksync-era/commit/a8e595265642f07232c1802618c61017a1d21fab))
+* **eth-proof-manager:** Add proper metrics ([#4439](https://github.com/matter-labs/zksync-era/issues/4439)) ([1045edc](https://github.com/matter-labs/zksync-era/commit/1045edc450e9b65cc0efc863df96b510b909cd50))
+* interop roots batch ordering ([#4434](https://github.com/matter-labs/zksync-era/issues/4434)) ([831f985](https://github.com/matter-labs/zksync-era/commit/831f985c376d3e66d3848beee8de712de74436c7))
+
+
+### Bug Fixes
+
+* **db:** Precommit query ([#4436](https://github.com/matter-labs/zksync-era/issues/4436)) ([4b64e6e](https://github.com/matter-labs/zksync-era/commit/4b64e6ead4d63df3c46ed8e0a82018d72025d99c))
+* **eth-proof-manager:** Fallbacking batch if successfully submitted ([#4379](https://github.com/matter-labs/zksync-era/issues/4379)) ([bfda346](https://github.com/matter-labs/zksync-era/commit/bfda346c260825a47dda6265340a03facbf34aab))
+* **eth-proof-manager:** use correct status while fallbacking ([#4396](https://github.com/matter-labs/zksync-era/issues/4396)) ([a5337de](https://github.com/matter-labs/zksync-era/commit/a5337de9a8caaccac14d2120efc343edff11abca))
+
 ## [29.1.2](https://github.com/matter-labs/zksync-era/compare/core-v29.1.1...core-v29.1.2) (2025-08-26)
 
 

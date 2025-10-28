@@ -9,13 +9,13 @@ const RECOVERY_TESTS_PATH: &str = "core/tests/recovery-test";
 
 pub async fn run(shell: &Shell, args: RecoveryArgs) -> anyhow::Result<()> {
     let config = ZkStackConfig::ecosystem(shell)?;
-    shell.change_dir(config.link_to_code.join(RECOVERY_TESTS_PATH));
+    shell.change_dir(config.link_to_code().join(RECOVERY_TESTS_PATH));
 
     logger::info(MSG_RECOVERY_TEST_RUN_INFO);
-    Server::new(None, None, config.link_to_code.clone(), false).build(shell)?;
+    Server::new(None, None, config.link_to_code().clone(), false).build(shell)?;
 
     if !args.no_deps {
-        install_and_build_dependencies(shell, &config.link_to_code)?;
+        install_and_build_dependencies(shell, &config.link_to_code())?;
     }
 
     run_test(shell, &args, &config).await?;

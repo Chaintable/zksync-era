@@ -11,7 +11,7 @@ pub(crate) async fn run(shell: &Shell, args: InitContractVerifierArgs) -> anyhow
     let args = args.fill_values_with_prompt(shell)?;
     // Todo allow to provide link to code as an argument
     let ecosystem = ZkStackConfig::ecosystem(shell)?;
-    let link_to_code = ecosystem.link_to_code;
+    let link_to_code = ecosystem.link_to_code();
 
     download_binaries(
         shell,

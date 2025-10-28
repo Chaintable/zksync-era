@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     forge_interface::deploy_ecosystem::input::{GenesisInput, InitialDeploymentConfig},
-    traits::ZkStackConfigTrait,
+    traits::FileConfigTrait,
     ContractsConfig,
 };
 
@@ -56,7 +56,7 @@ pub struct GatewayVotePreparationConfig {
     pub force_deployments_data: String,
 }
 
-impl ZkStackConfigTrait for GatewayVotePreparationConfig {}
+impl FileConfigTrait for GatewayVotePreparationConfig {}
 
 impl GatewayVotePreparationConfig {
     #[allow(clippy::too_many_arguments)]
@@ -111,7 +111,7 @@ impl GatewayVotePreparationConfig {
             ),
             default_aa_hash: genesis_input.default_aa_hash,
             bootloader_hash: genesis_input.bootloader_hash,
-            evm_emulator_hash: genesis_input.evm_emulator_hash.unwrap_or_default(),
+            evm_emulator_hash: genesis_input.evm_emulator_hash,
             avail_l1_da_validator: external_contracts_config.l1.avail_l1_da_validator_addr,
             bridgehub_proxy_address: external_contracts_config
                 .ecosystem_contracts
@@ -135,6 +135,7 @@ impl GatewayVotePreparationConfig {
             gateway_chain_id,
             force_deployments_data: external_contracts_config
                 .ecosystem_contracts
+                .ctm
                 .force_deployments_data
                 .clone()
                 .unwrap_or_default(),
