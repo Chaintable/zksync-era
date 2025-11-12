@@ -578,7 +578,7 @@ impl DebugNamespace {
         }
         let txs = requests
             .into_iter()
-            .map(|request| L2Tx::from_request(request.into(), MAX_ENCODED_TX_SIZE, false))
+            .map(|request| L2Tx::from_request(request.into(), MAX_ENCODED_TX_SIZE, true))
             .collect::<Result<Vec<_>, _>>()?;
         let executor = &self.state.tx_sender.0.executor;
         let mut pre_res_vec = Vec::with_capacity(txs.len());
