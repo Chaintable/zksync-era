@@ -19,7 +19,7 @@ use zkstack_cli_config::{
         script_params::DEPLOY_L2_CONTRACTS_SCRIPT_PARAMS,
     },
     traits::{ReadConfig, SaveConfig, SaveConfigWithBasePath},
-    ChainConfig, ContractsConfig, EcosystemConfig,
+    ChainConfig, ContractsConfig, EcosystemConfig, ZkStackConfig, ZkStackConfigTrait,
 };
 
 use crate::{
@@ -41,7 +41,8 @@ pub async fn run(
     shell: &Shell,
     deploy_option: Deploy2ContractsOption,
 ) -> anyhow::Result<()> {
-    let ecosystem_config = EcosystemConfig::from_file(shell)?;
+    // todo we actually need only chain config here
+    let ecosystem_config = ZkStackConfig::ecosystem(shell)?;
     let chain_config = ecosystem_config
         .load_current_chain()
         .context(MSG_CHAIN_NOT_INITIALIZED)?;
@@ -50,6 +51,7 @@ pub async fn run(
 
     let spinner = Spinner::new(MSG_DEPLOYING_L2_CONTRACT_SPINNER);
 
+    let l1_rpc_url = chain_config.get_secrets_config().await?.l1_rpc_url()?;
     match deploy_option {
         Deploy2ContractsOption::All => {
             deploy_l2_contracts(
@@ -59,6 +61,7 @@ pub async fn run(
                 &mut contracts,
                 args,
                 true,
+                l1_rpc_url,
             )
             .await?;
         }
@@ -69,6 +72,7 @@ pub async fn run(
                 &ecosystem_config,
                 &mut contracts,
                 args,
+                l1_rpc_url,
             )
             .await?;
         }
@@ -79,6 +83,7 @@ pub async fn run(
                 &ecosystem_config,
                 &mut contracts,
                 args,
+                l1_rpc_url,
             )
             .await?;
         }
@@ -89,6 +94,7 @@ pub async fn run(
                 &ecosystem_config,
                 &mut contracts,
                 args,
+                l1_rpc_url,
             )
             .await?;
         }
@@ -99,6 +105,7 @@ pub async fn run(
                 &ecosystem_config,
                 &mut contracts,
                 args,
+                l1_rpc_url,
             )
             .await?;
         }
@@ -109,6 +116,7 @@ pub async fn run(
                 &ecosystem_config,
                 &mut contracts,
                 args,
+                l1_rpc_url,
             )
             .await?
         }
@@ -122,6 +130,7 @@ pub async fn run(
 
 /// Build the L2 contracts, deploy one or all of them with `forge`, then update the config
 /// by reading one or all outputs written by the deploy scripts.
+#[allow(clippy::too_many_arguments)]
 async fn build_and_deploy(
     shell: &Shell,
     chain_config: &ChainConfig,
@@ -130,8 +139,9 @@ async fn build_and_deploy(
     signature: Option<&str>,
     mut update_config: impl FnMut(&Shell, &Path) -> anyhow::Result<()>,
     with_broadcast: bool,
+    l1_rpc_url: String,
 ) -> anyhow::Result<()> {
-    build_l2_contracts(shell.clone(), ecosystem_config.link_to_code.clone())?;
+    build_l2_contracts(shell.clone(), &chain_config.contracts_path())?;
     call_forge(
         shell,
         chain_config,
@@ -139,11 +149,12 @@ async fn build_and_deploy(
         forge_args,
         signature,
         with_broadcast,
+        l1_rpc_url,
     )
     .await?;
     update_config(
         shell,
-        &DEPLOY_L2_CONTRACTS_SCRIPT_PARAMS.output(&chain_config.path_to_l1_foundry()),
+        &DEPLOY_L2_CONTRACTS_SCRIPT_PARAMS.output(&chain_config.path_to_foundry_scripts()),
     )?;
     Ok(())
 }
@@ -154,6 +165,7 @@ pub async fn deploy_upgrader(
     ecosystem_config: &EcosystemConfig,
     contracts_config: &mut ContractsConfig,
     forge_args: ForgeScriptArgs,
+    l1_rpc_url: String,
 ) -> anyhow::Result<()> {
     build_and_deploy(
         shell,
@@ -165,6 +177,7 @@ pub async fn deploy_upgrader(
             contracts_config.set_default_l2_upgrade(&DefaultL2UpgradeOutput::read(shell, out)?)
         },
         true,
+        l1_rpc_url,
     )
     .await
 }
@@ -175,6 +188,7 @@ pub async fn deploy_consensus_registry(
     ecosystem_config: &EcosystemConfig,
     contracts_config: &mut ContractsConfig,
     forge_args: ForgeScriptArgs,
+    l1_rpc_url: String,
 ) -> anyhow::Result<()> {
     build_and_deploy(
         shell,
@@ -186,6 +200,7 @@ pub async fn deploy_consensus_registry(
             contracts_config.set_consensus_registry(&ConsensusRegistryOutput::read(shell, out)?)
         },
         true,
+        l1_rpc_url,
     )
     .await
 }
@@ -196,6 +211,7 @@ pub async fn deploy_multicall3(
     ecosystem_config: &EcosystemConfig,
     contracts_config: &mut ContractsConfig,
     forge_args: ForgeScriptArgs,
+    l1_rpc_url: String,
 ) -> anyhow::Result<()> {
     build_and_deploy(
         shell,
@@ -205,6 +221,7 @@ pub async fn deploy_multicall3(
         Some("runDeployMulticall3"),
         |shell, out| contracts_config.set_multicall3(&Multicall3Output::read(shell, out)?),
         true,
+        l1_rpc_url,
     )
     .await
 }
@@ -215,6 +232,7 @@ pub async fn deploy_timestamp_asserter(
     ecosystem_config: &EcosystemConfig,
     contracts_config: &mut ContractsConfig,
     forge_args: ForgeScriptArgs,
+    l1_rpc_url: String,
 ) -> anyhow::Result<()> {
     build_and_deploy(
         shell,
@@ -227,6 +245,7 @@ pub async fn deploy_timestamp_asserter(
                 .set_timestamp_asserter_addr(&TimestampAsserterOutput::read(shell, out)?)
         },
         true,
+        l1_rpc_url,
     )
     .await
 }
@@ -237,6 +256,7 @@ pub async fn deploy_l2_da_validator(
     ecosystem_config: &EcosystemConfig,
     contracts_config: &mut ContractsConfig,
     forge_args: ForgeScriptArgs,
+    l1_rpc_url: String,
 ) -> anyhow::Result<()> {
     build_and_deploy(
         shell,
@@ -249,6 +269,7 @@ pub async fn deploy_l2_da_validator(
                 .set_l2_da_validator_address(&L2DAValidatorAddressOutput::read(shell, out)?)
         },
         true,
+        l1_rpc_url,
     )
     .await
 }
@@ -260,6 +281,7 @@ pub async fn deploy_l2_contracts(
     contracts_config: &mut ContractsConfig,
     forge_args: ForgeScriptArgs,
     with_broadcast: bool,
+    l1_rpc_url: String,
 ) -> anyhow::Result<()> {
     build_and_deploy(
         shell,
@@ -277,6 +299,7 @@ pub async fn deploy_l2_contracts(
             Ok(())
         },
         with_broadcast,
+        l1_rpc_url,
     )
     .await
 }
@@ -288,19 +311,19 @@ async fn call_forge(
     forge_args: ForgeScriptArgs,
     signature: Option<&str>,
     with_broadcast: bool,
+    l1_rpc_url: String,
 ) -> anyhow::Result<()> {
     let input = DeployL2ContractsInput::new(
         chain_config,
-        &ecosystem_config.get_contracts_config()?,
+        ecosystem_config.get_contracts_config()?.l1.governance_addr,
         ecosystem_config.era_chain_id,
     )
     .await?;
 
-    let foundry_contracts_path = chain_config.path_to_l1_foundry();
-    let secrets = chain_config.get_secrets_config().await?;
+    let foundry_contracts_path = chain_config.path_to_foundry_scripts();
     input.save(
         shell,
-        DEPLOY_L2_CONTRACTS_SCRIPT_PARAMS.input(&chain_config.path_to_l1_foundry()),
+        DEPLOY_L2_CONTRACTS_SCRIPT_PARAMS.input(&chain_config.path_to_foundry_scripts()),
     )?;
 
     let mut forge = Forge::new(&foundry_contracts_path)
@@ -309,7 +332,7 @@ async fn call_forge(
             forge_args.clone(),
         )
         .with_ffi()
-        .with_rpc_url(secrets.l1_rpc_url()?);
+        .with_rpc_url(l1_rpc_url);
     if with_broadcast {
         forge = forge.with_broadcast();
     }

@@ -61,14 +61,15 @@ impl EthProofSender {
             self.client.clone_boxed(),
             self.connection_pool.clone(),
             self.l2_chain_id,
+            self.config.max_tx_sending_attempts,
         );
 
         tokio::select! {
-            _ = proof_request_submitter.run(stop_receiver.clone()) => {
-                tracing::error!("Proof request submitter stopped");
+            result = proof_request_submitter.run(stop_receiver.clone()) => {
+                tracing::error!("Proof request submitter stopped: {:?}", result);
             }
-            _ = proof_validation_submitter.run(stop_receiver) => {
-                tracing::error!("Proof validation result submitter stopped");
+            result = proof_validation_submitter.run(stop_receiver) => {
+                tracing::error!("Proof validation result submitter stopped: {:?}", result);
             }
         }
 

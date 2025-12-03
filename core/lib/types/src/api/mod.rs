@@ -258,6 +258,8 @@ pub struct L2ToL1LogProof {
     pub id: u32,
     /// The root of the tree.
     pub root: H256,
+    /// The L1 batch number where the log was included.
+    pub batch_number: L1BatchNumber,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1015,6 +1017,7 @@ pub struct BlockDetails {
 #[serde(rename_all = "camelCase")]
 pub struct L1BatchDetails {
     pub number: L1BatchNumber,
+    pub commitment: Option<H256>,
     #[serde(flatten)]
     pub base: BlockDetailsBase,
 }

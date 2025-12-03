@@ -14,10 +14,11 @@ use zksync_prover_interface::outputs::{
 };
 use zksync_types::{
     api::Log, commitment::serialize_commitments, ethabi, h256_to_u256, web3::keccak256,
-    L1BatchNumber, ProtocolVersionId, H256, STATE_DIFF_HASH_KEY_PRE_GATEWAY, U256,
+    L1BatchNumber, L2ChainId, ProtocolVersionId, H256, STATE_DIFF_HASH_KEY_PRE_GATEWAY, U256,
 };
 
 use crate::{
+    metrics::{ValidationResult, METRICS},
     types::{FflonkFinalVerificationKey, ProvingNetwork},
     watcher::events::EventHandler,
 };
@@ -34,6 +35,7 @@ pub struct ProofRequestProven {
 pub struct ProofRequestProvenHandler {
     connection_pool: ConnectionPool<Core>,
     blob_store: Arc<dyn ObjectStore>,
+    chain_id: L2ChainId,
     fflonk_vk: FflonkFinalVerificationKey,
 }
 
@@ -41,11 +43,13 @@ impl ProofRequestProvenHandler {
     pub fn new(
         connection_pool: ConnectionPool<Core>,
         blob_store: Arc<dyn ObjectStore>,
+        chain_id: L2ChainId,
         fflonk_vk: FflonkFinalVerificationKey,
     ) -> Self {
         Self {
             connection_pool,
             blob_store,
+            chain_id,
             fflonk_vk,
         }
     }
@@ -87,6 +91,15 @@ impl EventHandler for ProofRequestProvenHandler {
         }
 
         let chain_id = h256_to_u256(*log.topics.get(1).context("missing topic 1")?);
+
+        if chain_id != U256::from(self.chain_id.as_u64()) {
+            return Err(anyhow::anyhow!(
+                "Chain ID from event didn't match, expected {}, received {}",
+                self.chain_id,
+                chain_id
+            ));
+        }
+
         let block_number = h256_to_u256(*log.topics.get(2).context("missing topic 2")?);
 
         let decoded = decode(&[ParamType::Bytes, ParamType::Uint(8)], &log.data.0)?;
@@ -115,9 +128,6 @@ impl EventHandler for ProofRequestProvenHandler {
             event.assigned_to,
         );
 
-        let proof = <L1BatchProofForL1 as StoredObject>::deserialize(proof)
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize proof: {}", e))?;
-
         let batch_number = L1BatchNumber(event.block_number.as_u32());
 
         let verification_result = match verify_proof(
@@ -128,32 +138,34 @@ impl EventHandler for ProofRequestProvenHandler {
         )
         .await
         {
-            Ok(_) => {
+            Ok(proof) => {
                 tracing::info!("Proof for batch {} verified successfully", batch_number);
+
+                let proof_blob_url = self
+                    .blob_store
+                    .put(
+                        L1BatchProofForL1Key::Core((batch_number, proof.protocol_version())),
+                        &proof,
+                    )
+                    .await?;
+
+                self.connection_pool
+                    .connection()
+                    .await?
+                    .proof_generation_dal()
+                    .save_proof_artifacts_metadata(batch_number, &proof_blob_url)
+                    .await?;
+
+                METRICS.validated_batches[&ValidationResult::Success].inc();
+                METRICS.proven_batches[&event.assigned_to].set(batch_number.0 as u64);
                 true
             }
             Err(e) => {
                 tracing::error!("Failed to verify proof for batch {}: {}", batch_number, e);
+                METRICS.validated_batches[&ValidationResult::Failed].inc();
                 false
             }
         };
-
-        if verification_result {
-            let proof_blob_url = self
-                .blob_store
-                .put(
-                    L1BatchProofForL1Key::Core((batch_number, proof.protocol_version())),
-                    &proof,
-                )
-                .await?;
-
-            self.connection_pool
-                .connection()
-                .await?
-                .proof_generation_dal()
-                .save_proof_artifacts_metadata(batch_number, &proof_blob_url)
-                .await?;
-        }
 
         tracing::info!(
             "Batch {}, chain_id: {}, assigned_to: {:?}, verification_result: {:?}",
@@ -177,9 +189,12 @@ impl EventHandler for ProofRequestProvenHandler {
 async fn verify_proof(
     connection_pool: ConnectionPool<Core>,
     batch_number: L1BatchNumber,
-    proof: L1BatchProofForL1,
+    proof_bytes: Vec<u8>,
     verification_key: FflonkFinalVerificationKey,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<L1BatchProofForL1> {
+    let proof = <L1BatchProofForL1 as StoredObject>::deserialize(proof_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to deserialize proof: {}", e))?;
+
     let verification_result = match proof.inner() {
         TypedL1BatchProofForL1::Fflonk(proof) => {
             let proof = proof.scheduler_proof;
@@ -188,7 +203,7 @@ async fn verify_proof(
                 ZkSyncSnarkWrapperCircuitNoLookupCustomGate,
                 RollingKeccakTranscript<Fr>,
             >(&verification_key, &proof, None)
-            .map_err(|e| anyhow::anyhow!("Failed to verify fflonk proof: {}", e))?
+            .unwrap_or(false)
         }
         TypedL1BatchProofForL1::Plonk(_) => {
             return Err(anyhow::anyhow!(
@@ -220,6 +235,13 @@ async fn verify_proof(
         .header
         .protocol_version
         .unwrap_or_else(ProtocolVersionId::last_potentially_undefined);
+
+    if protocol_version != proof.protocol_version().minor {
+        return Err(anyhow::anyhow!(
+            "Protocol version doesn't match, server values: {protocol_version}, prover values: {}",
+            proof.protocol_version()
+        ));
+    }
 
     let events_queue_state = l1_batch
         .metadata
@@ -275,5 +297,5 @@ async fn verify_proof(
         ));
     }
 
-    Ok(())
+    Ok(proof)
 }

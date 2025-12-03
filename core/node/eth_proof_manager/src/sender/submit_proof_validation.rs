@@ -4,12 +4,17 @@ use tokio::sync::watch;
 use zksync_dal::{ConnectionPool, Core, CoreDal};
 use zksync_types::L2ChainId;
 
-use crate::{client::EthProofManagerClient, types::ProofRequestIdentifier};
+use crate::{
+    client::EthProofManagerClient,
+    metrics::{TxType, METRICS},
+    types::ProofRequestIdentifier,
+};
 
 pub struct SubmitProofValidationSubmitter {
     client: Box<dyn EthProofManagerClient>,
     connection_pool: ConnectionPool<Core>,
     l2_chain_id: L2ChainId,
+    max_attempts: u64,
 }
 
 impl SubmitProofValidationSubmitter {
@@ -17,11 +22,13 @@ impl SubmitProofValidationSubmitter {
         client: Box<dyn EthProofManagerClient>,
         connection_pool: ConnectionPool<Core>,
         l2_chain_id: L2ChainId,
+        max_attempts: u64,
     ) -> Self {
         Self {
             client,
             connection_pool,
             l2_chain_id,
+            max_attempts,
         }
     }
 
@@ -44,12 +51,22 @@ impl SubmitProofValidationSubmitter {
     }
 
     pub async fn loop_iteration(&self) -> anyhow::Result<()> {
+        let reached_max_attempts_amount = self
+            .connection_pool
+            .connection()
+            .await?
+            .eth_proof_manager_dal()
+            .get_reached_max_attempts_amount(self.max_attempts)
+            .await?;
+
+        METRICS.reached_max_attempts[&TxType::ValidationResult].set(reached_max_attempts_amount);
+
         let next_batch_to_be_validated = self
             .connection_pool
             .connection()
             .await?
             .eth_proof_manager_dal()
-            .get_batch_to_send_validation_result()
+            .get_batch_to_send_validation_result(self.max_attempts)
             .await?;
 
         if let Some((batch_number, validation_result)) = next_batch_to_be_validated {
@@ -83,6 +100,11 @@ impl SubmitProofValidationSubmitter {
                         batch_number,
                         e
                     );
+                    return Err(anyhow::anyhow!(
+                        "Failed to submit proof validation for batch {}: {}",
+                        batch_number,
+                        e
+                    ));
                 }
             }
         }

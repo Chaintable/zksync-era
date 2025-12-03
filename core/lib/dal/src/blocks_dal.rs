@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::Context as _;
-use bigdecimal::{BigDecimal, FromPrimitive};
+use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
 use sqlx::types::chrono::{DateTime, Utc};
 use zksync_db_connection::{
     connection::Connection,
@@ -49,7 +49,7 @@ pub struct BlocksDal<'a, 'c> {
     pub(crate) storage: &'a mut Connection<'c, Core>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TxForPrecommit {
     pub l1_batch_number: Option<L1BatchNumber>,
     pub l2block_number: L2BlockNumber,
@@ -340,6 +340,27 @@ impl BlocksDal<'_, '_> {
         Ok(row.number.map(|num| L1BatchNumber(num as u32)))
     }
 
+    pub async fn get_last_l1_batch_number_with_commitment(
+        &mut self,
+    ) -> DalResult<Option<L1BatchNumber>> {
+        let row = sqlx::query!(
+            r#"
+            SELECT
+                MAX(number) AS "number"
+            FROM
+                l1_batches
+            WHERE
+                commitment IS NOT NULL
+            "#
+        )
+        .instrument("get_last_l1_batch_number_with_commitment")
+        .report_latency()
+        .fetch_one(self.storage)
+        .await?;
+
+        Ok(row.number.map(|num| L1BatchNumber(num as u32)))
+    }
+
     /// Gets a number of the earliest L1 batch that is ready for commitment generation (i.e., doesn't have commitment
     /// yet, and has tree data).
     pub async fn get_next_l1_batch_ready_for_commitment_generation(
@@ -366,6 +387,35 @@ impl BlocksDal<'_, '_> {
         .await?;
 
         Ok(row.map(|row| L1BatchNumber(row.number as u32)))
+    }
+
+    /// Gets a number of the earliest L1 batch that is ready for commitment generation (i.e., doesn't have commitment
+    /// yet, and has tree data).
+    pub async fn get_commitment_for_l1_batch(
+        &mut self,
+        l1_batch_number: L1BatchNumber,
+    ) -> DalResult<Option<H256>> {
+        let row = sqlx::query!(
+            r#"
+            SELECT
+                commitment AS "commitment!"
+            FROM
+                l1_batches
+            WHERE
+                number = $1 AND commitment IS NOT NULL
+            ORDER BY
+                number
+            LIMIT
+                1
+            "#,
+            i64::from(l1_batch_number.0)
+        )
+        .instrument("get_next_l1_batch_ready_for_commitment_generation")
+        .report_latency()
+        .fetch_optional(self.storage)
+        .await?;
+
+        Ok(row.map(|row| H256::from_slice(row.commitment.as_ref())))
     }
 
     /// Gets a number of the last L1 batch that is ready for commitment generation (i.e., doesn't have commitment
@@ -421,7 +471,7 @@ impl BlocksDal<'_, '_> {
 
     /// Returns the number of the earliest L1 batch with metadata (= state hash) present in the DB,
     /// or `None` if there are no such L1 batches.
-    pub async fn get_earliest_l1_batch_number_with_metadata(
+    pub async fn get_earliest_l1_batch_number_with_commitment(
         &mut self,
     ) -> DalResult<Option<L1BatchNumber>> {
         let row = sqlx::query!(
@@ -431,7 +481,7 @@ impl BlocksDal<'_, '_> {
             FROM
                 l1_batches
             WHERE
-                hash IS NOT NULL
+                commitment IS NOT NULL
             "#
         )
         .instrument("get_earliest_l1_batch_number_with_metadata")
@@ -1116,6 +1166,7 @@ impl BlocksDal<'_, '_> {
         storage_refunds: &[u32],
         pubdata_costs: &[i32],
         predicted_circuits_by_type: CircuitStatistic, // predicted number of circuits for each circuit type
+        bytes_per_blob: u64,
     ) -> anyhow::Result<()> {
         let initial_bootloader_contents_len = initial_bootloader_contents.len();
         let instrumentation = Instrumented::new("mark_l1_batch_as_sealed")
@@ -1143,6 +1194,12 @@ impl BlocksDal<'_, '_> {
         let storage_refunds: Vec<_> = storage_refunds.iter().copied().map(i64::from).collect();
         let pubdata_costs: Vec<_> = pubdata_costs.iter().copied().map(i64::from).collect();
 
+        let blobs_amount = pubdata_input
+            .clone()
+            .map(|input| input.len() as u64)
+            .unwrap_or(0)
+            .div_ceil(bytes_per_blob);
+
         let query = sqlx::query!(
             r#"
             UPDATE l1_batches
@@ -1163,6 +1220,7 @@ impl BlocksDal<'_, '_> {
                 pubdata_costs = $15,
                 pubdata_input = $16,
                 predicted_circuits_by_type = $17,
+                blobs_amount = $18,
                 updated_at = NOW(),
                 sealed_at = NOW(),
                 is_sealed = TRUE
@@ -1190,6 +1248,7 @@ impl BlocksDal<'_, '_> {
             &pubdata_costs,
             pubdata_input,
             serde_json::to_value(predicted_circuits_by_type).unwrap(),
+            blobs_amount as i64,
         );
         let update_result = instrumentation.with(query).execute(self.storage).await?;
 
@@ -1201,6 +1260,29 @@ impl BlocksDal<'_, '_> {
         }
 
         Ok(())
+    }
+
+    pub async fn get_blobs_amount_for_range(
+        &mut self,
+        lower_bound: L1BatchNumber,
+        upper_bound: L1BatchNumber,
+    ) -> DalResult<u64> {
+        let result: u64 = sqlx::query!(
+            r#"
+            SELECT SUM(blobs_amount) FROM l1_batches WHERE number BETWEEN $1 AND $2
+            "#,
+            i64::from(lower_bound.0),
+            i64::from(upper_bound.0)
+        )
+        .instrument("get_blobs_amount_for_range")
+        .fetch_optional(self.storage)
+        .await?
+        .map(|r| r.sum)
+        .unwrap()
+        .map(|x| x.to_i64().unwrap() as u64)
+        .unwrap_or(0);
+
+        Ok(result)
     }
 
     pub async fn get_unsealed_l1_batch(&mut self) -> DalResult<Option<UnsealedL1BatchHeader>> {
@@ -3584,7 +3666,7 @@ impl BlocksDal<'_, '_> {
 
     pub async fn insert_mock_l1_batch(&mut self, header: &L1BatchHeader) -> anyhow::Result<()> {
         self.insert_l1_batch(header.to_unsealed_header()).await?;
-        self.mark_l1_batch_as_sealed(header, &[], &[], &[], Default::default())
+        self.mark_l1_batch_as_sealed(header, &[], &[], &[], Default::default(), 1)
             .await
     }
 

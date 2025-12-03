@@ -12,13 +12,22 @@ pub(crate) struct RawConfig {
 }
 
 impl RawConfig {
-    pub async fn read(shell: &Shell, path: PathBuf) -> anyhow::Result<Self> {
-        let path = shell.current_dir().join(&path);
+    pub async fn read(shell: &Shell, path: &Path) -> anyhow::Result<Self> {
+        let path = shell.current_dir().join(path);
         let raw = fs::read_to_string(&path)
             .await
             .with_context(|| format!("failed reading config at `{path:?}`"))?;
-        let inner: serde_yaml::Value = serde_yaml::from_str(&raw)
-            .with_context(|| format!("failed deserializing config at `{path:?}` as YAML"))?;
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default();
+        let inner = match extension {
+            "yaml" | "yml" => serde_yaml::from_str(&raw)
+                .with_context(|| format!("failed deserializing config at `{path:?}` as YAML"))?,
+            "json" => serde_json::from_str(&raw)
+                .with_context(|| format!("failed deserializing config at `{path:?}` as YAML"))?,
+            _ => anyhow::bail!("unsupported config file extension `{extension}`"),
+        };
         anyhow::ensure!(
             matches!(&inner, serde_yaml::Value::Mapping(_)),
             "configuration is not a map"
@@ -64,8 +73,8 @@ pub(crate) struct PatchedConfig {
 }
 
 impl PatchedConfig {
-    pub fn empty(shell: &Shell, path: PathBuf) -> Self {
-        let path = shell.current_dir().join(&path);
+    pub fn empty(shell: &Shell, path: &Path) -> Self {
+        let path = shell.current_dir().join(path);
         Self {
             base: RawConfig {
                 path,
@@ -147,10 +156,22 @@ impl PatchedConfig {
     }
 
     pub async fn save(self) -> anyhow::Result<()> {
-        let contents =
-            serde_yaml::to_string(&self.base.inner).context("failed serializing config")?;
-        fs::write(&self.base.path, contents)
+        let path = self.base.path;
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default();
+        let contents = match extension {
+            "yaml" | "yml" => serde_yaml::to_string(&self.base.inner)
+                .with_context(|| format!("failed serializing config at `{path:?}` as YAML"))?,
+            "json" => serde_json::to_string_pretty(&self.base.inner)
+                .with_context(|| format!("failed serializing config at `{path:?}` as YAML"))?,
+            _ => {
+                anyhow::bail!("unsupported config file extension `{extension}`");
+            }
+        };
+        fs::write(&path, contents)
             .await
-            .with_context(|| format!("failed writing config to `{:?}`", self.base.path))
+            .with_context(|| format!("failed writing config to `{:?}`", path))
     }
 }
