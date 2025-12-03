@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use ethers::{
@@ -17,9 +17,10 @@ use zkstack_cli_common::{
 };
 use zkstack_cli_config::{
     forge_interface::script_params::ACCEPT_GOVERNANCE_SCRIPT_PARAMS,
-    traits::{ReadConfig, ZkStackConfig},
+    traits::{FileConfigTrait, ReadConfig},
     ChainConfig, ContractsConfig, EcosystemConfig,
 };
+use zkstack_cli_types::VMOption;
 use zksync_basic_types::U256;
 
 use crate::{
@@ -59,7 +60,7 @@ lazy_static! {
 
 pub async fn accept_admin(
     shell: &Shell,
-    ecosystem_config: &EcosystemConfig,
+    foundry_contracts_path: PathBuf,
     admin: Address,
     governor: &Wallet,
     target_address: Address,
@@ -75,7 +76,6 @@ pub async fn accept_admin(
     let calldata = ADMIN_FUNCTIONS
         .encode("chainAdminAcceptAdmin", (admin, target_address))
         .unwrap();
-    let foundry_contracts_path = ecosystem_config.path_to_l1_foundry();
     let forge = Forge::new(&foundry_contracts_path)
         .script(
             &ACCEPT_GOVERNANCE_SCRIPT_PARAMS.script(),
@@ -90,7 +90,7 @@ pub async fn accept_admin(
 
 pub async fn accept_owner(
     shell: &Shell,
-    ecosystem_config: &EcosystemConfig,
+    foundry_contracts_path: PathBuf,
     governor_contract: Address,
     governor: &Wallet,
     target_address: Address,
@@ -104,7 +104,6 @@ pub async fn accept_owner(
     let calldata = ADMIN_FUNCTIONS
         .encode("governanceAcceptOwner", (governor_contract, target_address))
         .unwrap();
-    let foundry_contracts_path = ecosystem_config.path_to_l1_foundry();
     let forge = Forge::new(&foundry_contracts_path)
         .script(
             &ACCEPT_GOVERNANCE_SCRIPT_PARAMS.script(),
@@ -120,7 +119,7 @@ pub async fn accept_owner(
 #[allow(clippy::too_many_arguments)]
 pub async fn make_permanent_rollup(
     shell: &Shell,
-    ecosystem_config: &EcosystemConfig,
+    path_to_foundry_scripts: &Path,
     chain_admin_addr: Address,
     governor: &Wallet,
     diamond_proxy_address: Address,
@@ -137,8 +136,7 @@ pub async fn make_permanent_rollup(
             (chain_admin_addr, diamond_proxy_address),
         )
         .unwrap();
-    let foundry_contracts_path = ecosystem_config.path_to_l1_foundry();
-    let forge = Forge::new(&foundry_contracts_path)
+    let forge = Forge::new(path_to_foundry_scripts)
         .script(
             &ACCEPT_GOVERNANCE_SCRIPT_PARAMS.script(),
             forge_args.clone(),
@@ -153,17 +151,16 @@ pub async fn make_permanent_rollup(
 #[allow(clippy::too_many_arguments)]
 pub async fn governance_execute_calls(
     shell: &Shell,
-    ecosystem_config: &EcosystemConfig,
-    governor: &Wallet,
+    path_to_foundry_scripts: PathBuf,
+    mode: AdminScriptMode,
     encoded_calls: Vec<u8>,
     forge_args: &ForgeScriptArgs,
     l1_rpc_url: String,
-) -> anyhow::Result<()> {
+    governance_address: Address,
+) -> anyhow::Result<AdminScriptOutput> {
     // resume doesn't properly work here.
     let mut forge_args = forge_args.clone();
     forge_args.resume = false;
-
-    let governance_address = ecosystem_config.get_contracts_config()?.l1.governance_addr;
 
     let calldata = ADMIN_FUNCTIONS
         .encode(
@@ -171,24 +168,40 @@ pub async fn governance_execute_calls(
             (Token::Bytes(encoded_calls), governance_address),
         )
         .unwrap();
-    let foundry_contracts_path = ecosystem_config.path_to_l1_foundry();
-    let forge = Forge::new(&foundry_contracts_path)
+    let forge = Forge::new(&path_to_foundry_scripts)
         .script(
             &ACCEPT_GOVERNANCE_SCRIPT_PARAMS.script(),
             forge_args.clone(),
         )
         .with_ffi()
         .with_rpc_url(l1_rpc_url)
-        .with_broadcast()
         .with_calldata(&calldata);
-    accept_ownership(shell, governor, forge).await
+
+    let description = "executing governance calls";
+    let (forge, spinner_text) = match mode {
+        AdminScriptMode::OnlySave => (forge, format!("Preparing calldata for {description}")),
+        AdminScriptMode::Broadcast(wallet) => {
+            let forge = forge.with_broadcast();
+            let forge = fill_forge_private_key(forge, Some(&wallet), WalletOwner::Governor)?;
+            check_the_balance(&forge).await?;
+            (forge, format!("Executing {description}"))
+        }
+    };
+
+    let spinner = Spinner::new(&spinner_text);
+    forge.run(shell)?;
+    spinner.finish();
+
+    let output_path = ACCEPT_GOVERNANCE_SCRIPT_PARAMS.output(&path_to_foundry_scripts);
+    Ok(AdminScriptOutputInner::read(shell, output_path)?.into())
 }
 
 #[allow(clippy::too_many_arguments)]
 pub async fn ecosystem_admin_execute_calls(
     shell: &Shell,
-    ecosystem_config: &EcosystemConfig,
     ecosystem_admin: &Wallet,
+    ecosystem_admin_addr: Address,
+    path_to_foundry_scripts: PathBuf,
     encoded_calls: Vec<u8>,
     forge_args: &ForgeScriptArgs,
     l1_rpc_url: String,
@@ -197,16 +210,13 @@ pub async fn ecosystem_admin_execute_calls(
     let mut forge_args = forge_args.clone();
     forge_args.resume = false;
 
-    let ecosystem_admin_addr = ecosystem_config.get_contracts_config()?.l1.chain_admin_addr;
-
     let calldata = ADMIN_FUNCTIONS
         .encode(
             "ecosystemAdminExecuteCalls",
             (Token::Bytes(encoded_calls), ecosystem_admin_addr),
         )
         .unwrap();
-    let foundry_contracts_path = ecosystem_config.path_to_l1_foundry();
-    let forge = Forge::new(&foundry_contracts_path)
+    let forge = Forge::new(&path_to_foundry_scripts)
         .script(
             &ACCEPT_GOVERNANCE_SCRIPT_PARAMS.script(),
             forge_args.clone(),
@@ -221,7 +231,7 @@ pub async fn ecosystem_admin_execute_calls(
 #[allow(clippy::too_many_arguments)]
 pub async fn admin_execute_upgrade(
     shell: &Shell,
-    ecosystem_config: &EcosystemConfig,
+    path_to_foundry_scripts: &Path,
     chain_contracts_config: &ContractsConfig,
     governor: &Wallet,
     upgrade_diamond_cut: Vec<u8>,
@@ -250,8 +260,7 @@ pub async fn admin_execute_upgrade(
             ),
         )
         .unwrap();
-    let foundry_contracts_path = ecosystem_config.path_to_l1_foundry();
-    let forge = Forge::new(&foundry_contracts_path)
+    let forge = Forge::new(path_to_foundry_scripts)
         .script(
             &ACCEPT_GOVERNANCE_SCRIPT_PARAMS.script(),
             forge_args.clone(),
@@ -273,6 +282,7 @@ pub async fn admin_schedule_upgrade(
     governor: &Wallet,
     forge_args: &ForgeScriptArgs,
     l1_rpc_url: String,
+    vm_option: VMOption,
 ) -> anyhow::Result<()> {
     // resume doesn't properly work here.
     let mut forge_args = forge_args.clone();
@@ -295,7 +305,7 @@ pub async fn admin_schedule_upgrade(
             ),
         )
         .unwrap();
-    let foundry_contracts_path = ecosystem_config.path_to_l1_foundry();
+    let foundry_contracts_path = ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option);
     let forge = Forge::new(&foundry_contracts_path)
         .script(
             &ACCEPT_GOVERNANCE_SCRIPT_PARAMS.script(),
@@ -311,7 +321,7 @@ pub async fn admin_schedule_upgrade(
 #[allow(clippy::too_many_arguments)]
 pub async fn admin_update_validator(
     shell: &Shell,
-    ecosystem_config: &EcosystemConfig,
+    path_to_foundry_scripts: &Path,
     chain_config: &ChainConfig,
     validator_timelock: Address,
     validator: Address,
@@ -345,8 +355,7 @@ pub async fn admin_update_validator(
             ),
         )
         .unwrap();
-    let foundry_contracts_path = ecosystem_config.path_to_l1_foundry();
-    let forge = Forge::new(&foundry_contracts_path)
+    let forge = Forge::new(path_to_foundry_scripts)
         .script(
             &ACCEPT_GOVERNANCE_SCRIPT_PARAMS.script(),
             forge_args.clone(),
@@ -371,6 +380,7 @@ async fn accept_ownership(
     Ok(())
 }
 
+#[derive(Clone)]
 pub enum AdminScriptMode {
     OnlySave,
     Broadcast(Wallet),
@@ -383,12 +393,12 @@ impl AdminScriptMode {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-struct AdminScriptOutputInner {
+pub(crate) struct AdminScriptOutputInner {
     admin_address: Address,
     encoded_data: String,
 }
 
-impl ZkStackConfig for AdminScriptOutputInner {}
+impl FileConfigTrait for AdminScriptOutputInner {}
 
 #[derive(Debug, Clone, Default)]
 pub struct AdminScriptOutput {

@@ -216,6 +216,7 @@ impl ZksNamespace {
                 proof,
                 root: local_root,
                 id: l1_log_index as u32,
+                batch_number: l1_batch_number,
             }));
         }
 
@@ -287,6 +288,7 @@ impl ZksNamespace {
             proof,
             root,
             id: l1_log_index as u32,
+            batch_number: l1_batch_number,
         }))
     }
 
@@ -447,12 +449,13 @@ impl ZksNamespace {
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn get_fee_params_impl(&self) -> FeeParams {
+    pub async fn get_fee_params_impl(&self) -> FeeParams {
         self.state
             .tx_sender
             .0
             .batch_fee_input_provider
             .get_fee_model_params()
+            .await
     }
 
     #[deprecated]

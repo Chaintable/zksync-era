@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use xshell::Shell;
 use zksync_basic_types::{commitment::L1BatchCommitmentMode, L1ChainId, L2ChainId, H256};
@@ -11,8 +11,9 @@ use crate::{
 #[derive(Debug)]
 pub struct GenesisConfig(pub(crate) RawConfig);
 
+// TODO get rid of the methods. Genesis config now should be used only for getting root data
 impl GenesisConfig {
-    pub async fn read(shell: &Shell, path: PathBuf) -> anyhow::Result<Self> {
+    pub async fn read(shell: &Shell, path: &Path) -> anyhow::Result<Self> {
         RawConfig::read(shell, path).await.map(Self)
     }
 

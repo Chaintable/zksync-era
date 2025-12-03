@@ -7,8 +7,8 @@ use zksync_object_store::ObjectStore;
 use zksync_types::L2ChainId;
 
 use crate::client::EthProofManagerClient;
-
 mod client;
+mod metrics;
 pub mod node;
 mod sender;
 #[cfg(test)]
@@ -35,6 +35,7 @@ impl EthProofManager {
                 client.clone_boxed(),
                 connection_pool.clone(),
                 blob_store.clone(),
+                l2_chain_id,
                 config.clone(),
             ),
             sender: sender::EthProofSender::new(
@@ -50,11 +51,11 @@ impl EthProofManager {
 
     pub async fn run(&self, stop_receiver: watch::Receiver<bool>) -> anyhow::Result<()> {
         tokio::select! {
-            _ = self.watcher.run(stop_receiver.clone()) => {
-                tracing::info!("Watcher stopped");
+            result = self.watcher.run(stop_receiver.clone()) => {
+                tracing::info!("Watcher stopped: {:?}", result);
             },
-            _ = self.sender.run(stop_receiver) => {
-                tracing::info!("Sender stopped");
+            result = self.sender.run(stop_receiver) => {
+                tracing::info!("Sender stopped: {:?}", result);
             },
         }
         Ok(())
