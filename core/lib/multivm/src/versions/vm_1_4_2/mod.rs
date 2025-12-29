@@ -19,7 +19,7 @@ pub use self::{
 mod bootloader_state;
 pub mod constants;
 mod implementation;
-mod old_vm;
+pub mod old_vm;
 mod oracles;
 // ```
 // #[cfg(test)]

@@ -3,6 +3,7 @@ use zksync_types::{
         BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, OpenEthActionTrace,
         PreResult, TracerConfig,
     },
+    debank::DebankOutPut,
     transaction_request::CallRequest,
     web3::Bytes,
     H256,
@@ -86,6 +87,11 @@ impl PreNamespaceServer for DebugNamespace {
 impl TraceNamespaceServer for DebugNamespace {
     async fn trace_trace_transaction(&self, tx_hash: H256) -> RpcResult<Vec<OpenEthActionTrace>> {
         self.trace_trace_transaction_impl(tx_hash)
+            .await
+            .map_err(|err| self.current_method().map_err(err))
+    }
+    async fn trace_debank_block(&self, block_hash: BlockId) -> RpcResult<DebankOutPut> {
+        self.trace_debank_block_impl(block_hash)
             .await
             .map_err(|err| self.current_method().map_err(err))
     }

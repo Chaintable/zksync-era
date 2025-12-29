@@ -7,6 +7,7 @@ pub use self::{
 };
 
 mod call_tracer;
+pub mod debank;
 pub mod dynamic;
 mod multivm_dispatcher;
 pub mod old;

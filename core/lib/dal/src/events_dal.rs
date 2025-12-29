@@ -401,6 +401,7 @@ impl EventsDal<'_, '_> {
                     address: Address::from_slice(&row.address),
                     indexed_topics,
                     value: row.value,
+                    position: 0,
                 }
             })
             .collect();

@@ -1,12 +1,14 @@
+use zk_evm_1_4_1::aux_structures::Timestamp;
 use zk_evm_1_4_1::{
     tracing::{AfterExecutionData, VmLocalStateData},
     zkevm_opcode_defs::{
-        FarCallABI, FatPointer, Opcode, RetOpcode, CALL_IMPLICIT_CALLDATA_FAT_PTR_REGISTER,
-        RET_IMPLICIT_RETURNDATA_PARAMS_REGISTER,
+        FarCallABI, FatPointer, LogOpcode, Opcode, RetOpcode,
+        CALL_IMPLICIT_CALLDATA_FAT_PTR_REGISTER, RET_IMPLICIT_RETURNDATA_PARAMS_REGISTER,
     },
 };
 use zksync_system_constants::CONTRACT_DEPLOYER_ADDRESS;
-use zksync_types::{zk_evm_types::FarCallOpcode, U256};
+use zksync_types::{zk_evm_types::FarCallOpcode, L1BatchNumber, U256};
+use zksync_vm_interface::tracer::TracerExecutionStatus;
 
 use crate::{
     glue::GlueInto,
@@ -16,7 +18,9 @@ use crate::{
         Call, CallType, VmRevertReason,
     },
     tracers::{dynamic::vm_1_4_1::DynTracer, CallTracer},
-    vm_1_4_1::{BootloaderState, HistoryMode, SimpleMemory, VmTracer, ZkSyncVmState},
+    vm_1_4_1::{
+        old_vm::events, BootloaderState, HistoryMode, SimpleMemory, VmTracer, ZkSyncVmState,
+    },
 };
 
 impl<S, H: HistoryMode> DynTracer<S, SimpleMemory<H>> for CallTracer {
@@ -46,11 +50,28 @@ impl<S, H: HistoryMode> DynTracer<S, SimpleMemory<H>> for CallTracer {
                     r#type: CallType::Call(far_call.glue_into()),
                     gas: 0,
                     parent_gas,
+                    call_start_timestamp: state.vm_local_state.timestamp,
                     ..Default::default()
                 };
 
                 self.handle_far_call_op_code_vm_1_4_1(state, memory, &mut current_call);
                 self.push_call_and_update_stats(current_call, 0);
+            }
+            Opcode::Log(log_opcode) => {
+                // Q: if it's possible to append logs to call frame here?
+                // A: Impossible, because the logs the Opcode::Log generated is not the log in EVM format, Opcode::Log generate log fragmentation to EVM logs
+                match log_opcode {
+                    LogOpcode::StorageWrite => {
+                        // We need to set the storage change here, because the log opcode
+                        // is not a call and we need to set the storage change for the current call
+                        if let Some(mut current_call) = self.stack.pop() {
+                            current_call.farcall.storage_change = true;
+                            current_call.farcall.self_storage_change = true;
+                            self.stack.push(current_call);
+                        };
+                    }
+                    _ => (),
+                }
             }
             Opcode::Ret(ret_code) => {
                 self.handle_ret_op_code_vm_1_4_1(state, memory, ret_code);
@@ -61,6 +82,87 @@ impl<S, H: HistoryMode> DynTracer<S, SimpleMemory<H>> for CallTracer {
 }
 
 impl<S: WriteStorage, H: HistoryMode> VmTracer<S, H> for CallTracer {
+    /// Run after each vm execution cycle
+    fn finish_cycle(
+        &mut self,
+        state: &mut ZkSyncVmState<S, H>,
+        _bootloader_state: &mut BootloaderState,
+    ) -> TracerExecutionStatus {
+        // get the last call that have just returned in `handle_ret_op_code_latest` method
+        let last_subcall;
+        if self.subcall_returned {
+            last_subcall = self
+                .stack
+                .last_mut()
+                .expect("There should be at least one call in the stack")
+                .farcall
+                .calls
+                .last_mut()
+                .expect("There should be at least one sub call in the parent calls");
+            self.subcall_returned = false;
+        } else if self.topcall_returned {
+            last_subcall = &mut self
+                .stack
+                .last_mut()
+                .expect("There should be at least one call in the stack")
+                .farcall;
+            self.topcall_returned = false;
+        } else {
+            return TracerExecutionStatus::Continue;
+        }
+
+        // Numbering subcalls position in the parent
+        last_subcall
+            .calls
+            .iter_mut()
+            .enumerate()
+            .for_each(|(i, subcall)| {
+                subcall.pos_in_parent_trace = i as u32;
+            });
+
+        // collect events
+        let from_timestamp = Timestamp(last_subcall.call_start_timestamp); // the start time of the cycle
+        let (raw_events, _) = state
+            .event_sink
+            .get_events_and_l2_l1_logs_after_timestamp(from_timestamp);
+
+        let existing_events: Vec<_> = last_subcall
+            .calls
+            .iter()
+            .flat_map(|call| {
+                let mut all_events = call.events.clone();
+                let mut stack = call.calls.clone();
+                while let Some(subcall) = stack.pop() {
+                    all_events.extend(subcall.events.clone());
+                    stack.extend(subcall.calls.clone());
+                }
+                all_events
+            })
+            .collect();
+        let events = events::merge_events(raw_events)
+            .into_iter()
+            .map(|e| {
+                e.into_vm_event(L1BatchNumber(0)) // TODO fill the l2 block number
+            })
+            .filter(|e| {
+                !existing_events.iter().any(|existing_event| {
+                    existing_event.address == e.address
+                        && existing_event.indexed_topics == e.indexed_topics
+                        && existing_event.value == e.value
+                })
+            })
+            .enumerate()
+            .map(|(idx, mut e)| {
+                e.position = (last_subcall.calls.len() + idx) as u32;
+                e
+            })
+            .collect();
+
+        last_subcall.events = events;
+
+        TracerExecutionStatus::Continue
+    }
+
     fn after_vm_execution(
         &mut self,
         _state: &mut ZkSyncVmState<S, H>,
@@ -197,9 +299,14 @@ impl CallTracer {
         // If there is a parent call, push the current call to it
         // Otherwise, push the current call to the stack, because it's the top level call
         if let Some(parent_call) = self.stack.last_mut() {
+            if current_call.farcall.storage_change {
+                parent_call.farcall.storage_change = true;
+            }
             parent_call.farcall.calls.push(current_call.farcall);
+            self.subcall_returned = true;
         } else {
             self.push_call_and_update_stats(current_call.farcall, current_call.near_calls_after);
+            self.topcall_returned = true;
         }
     }
 }

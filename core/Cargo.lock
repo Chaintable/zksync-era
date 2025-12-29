@@ -6771,6 +6771,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "md5"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
+
+[[package]]
 name = "memchr"
 version = "2.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14435,6 +14441,7 @@ dependencies = [
  "ethabi",
  "hex",
  "itertools 0.13.0",
+ "md5",
  "once_cell",
  "pretty_assertions",
  "rand 0.8.5",
@@ -15283,6 +15290,7 @@ dependencies = [
  "ciborium",
  "derive_more 2.0.1",
  "hex",
+ "md5",
  "num_enum 0.7.4",
  "once_cell",
  "prost 0.12.6",
@@ -15291,6 +15299,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "serde_with 1.14.0",
+ "sha1",
  "thiserror 2.0.12",
  "tracing",
  "zksync_basic_types",

@@ -52,6 +52,7 @@ pub mod zk_evm_types;
 
 pub mod api;
 pub mod base_token_ratio;
+pub mod debank;
 pub mod eth_sender;
 pub mod helpers;
 #[cfg(feature = "protobuf")]

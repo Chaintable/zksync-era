@@ -1,7 +1,10 @@
 use anyhow::Context as _;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use zksync_dal::{CoreDal, DalError};
-use zksync_multivm::interface::{Call, CallType, ExecutionResult, OneshotTracingParams};
+use zksync_multivm::{
+    interface::{Call, CallType, ExecutionResult, OneshotTracingParams},
+    tracers::debank,
+};
 use zksync_system_constants::MAX_ENCODED_TX_SIZE;
 use zksync_types::api::{flat_call, Log, OpenEthActionTrace, PreError, PreResult};
 use zksync_types::{
@@ -13,8 +16,9 @@ use zksync_types::{
         BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, DebugCall, DebugCallType,
         ResultDebugCall, SupportedTracers, TracerConfig,
     },
+    debank::{BlockFile, DebankBlock, DebankOutPut, DebankTransaction, Header},
     debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat},
-    l2::L2Tx,
+    l2::{L2Tx, TransactionType},
     transaction_request::CallRequest,
     web3,
     web3::Bytes,
@@ -260,6 +264,7 @@ impl DebugNamespace {
             Self::map_call(call_trace, meta, options.unwrap_or_default())
         }))
     }
+
     pub async fn trace_trace_transaction_impl(
         &self,
         tx_hash: H256,
@@ -731,5 +736,372 @@ impl DebugNamespace {
             }
         }
         return Ok(pre_res_vec);
+    }
+
+    async fn trace_debank_genesis_block_impl(
+        &self,
+        block_id: BlockId,
+    ) -> Result<DebankOutPut, Web3Error> {
+        let mut connection = self.state.acquire_connection().await?;
+        let block_number = self.state.resolve_block(&mut connection, block_id).await?;
+        
+        let l2_block = match connection
+            .blocks_web3_dal()
+            .get_api_block(block_number)
+            .await
+            .map_err(DalError::generalize)?
+        {
+            Some(block) => block,
+            None => return Err(Web3Error::NoBlock),
+        };
+
+        let block_file = BlockFile {
+            block: DebankBlock {
+                id: l2_block.hash,
+                height: l2_block.number.as_u64(),
+                parent_id: l2_block.parent_hash,
+                base_fee_per_gas: Some(l2_block.base_fee_per_gas.as_u64()),
+                gas_limit: l2_block.gas_limit.as_u64(),
+                gas_used: l2_block.gas_used.as_u64(),
+                timestamp: l2_block.timestamp.as_u64(),
+                process_start_timestamp: l2_block.timestamp.as_u64(),
+                ..Default::default()
+            },
+            transactions: vec![],
+            events: vec![],
+            traces: vec![],
+            error_traces: vec![],
+            error_events: vec![],
+            storage_contracts: vec![],
+        };
+
+        let header = Header {
+            number: l2_block.number.as_u64(),
+            hash: l2_block.hash,
+            parent_hash: l2_block.parent_hash,
+            nonce: l2_block.nonce,
+            mix_hash: l2_block.mix_hash,
+            sha3_uncles: l2_block.uncles_hash,
+            logs_bloom: l2_block.logs_bloom,
+            state_root: l2_block.state_root,
+            miner: l2_block.author,
+            difficulty: l2_block.difficulty,
+            extra_data: l2_block.extra_data,
+            gas_limit: l2_block.gas_limit.as_u64(),
+            gas_used: l2_block.gas_used.as_u64(),
+            timestamp: l2_block.timestamp.as_u64(),
+            transactions_root: l2_block.transactions_root,
+            receipts_root: l2_block.receipts_root,
+            base_fee_per_gas: Some(l2_block.base_fee_per_gas),
+            withdrawals_root: None,
+            blob_gas_used: None,
+            excess_blob_gas: None,
+            parent_beacon_block_root: None,
+            requests_root: None,
+            ..Default::default()
+        };
+
+        Ok(DebankOutPut {
+            header,
+            validation_hash: block_file.validation().validation_hash,
+            block_file,
+            state_diff: vec![].into(),
+        })
+    }
+
+    pub async fn trace_debank_block_impl(
+        &self,
+        block_id: BlockId,
+    ) -> Result<DebankOutPut, Web3Error> {
+        self.current_method().set_block_id(block_id);
+        let mut connection = self.state.acquire_connection().await?;
+
+        self.state
+            .start_info
+            .ensure_not_pruned(block_id, &mut connection)
+            .await?;
+
+        let block_args = self
+            .state
+            .resolve_block_args(&mut connection, block_id)
+            .await?;
+        self.current_method().set_block_diff(
+            self.state
+                .last_sealed_l2_block
+                .diff_with_block_args(&block_args),
+        );
+
+        let block_number = self.state.resolve_block(&mut connection, block_id).await?;
+        
+        // Handle genesis block separately
+        if block_number.0 == 0 {
+            return self.trace_debank_genesis_block_impl(block_id).await;
+        }
+        
+        let parent_block_args = self.state.resolve_block_args(&mut connection, BlockId::Number((block_number - 1).0.into())).await?;
+
+        let l2_block = match connection
+            .blocks_web3_dal()
+            .get_api_block(block_number)
+            .await
+            .map_err(DalError::generalize)?
+        {
+            Some(block) => block,
+            None => return Err(Web3Error::NoBlock),
+        };
+
+        let raw_transactions = connection
+            .transactions_web3_dal()
+            .get_raw_l2_block_transactions(block_number)
+            .await
+            .map_err(DalError::generalize)?;
+
+        let l2_transactions: Vec<L2Tx> = raw_transactions
+            .into_iter()
+            .filter_map(|tx| match tx.common_data {
+                zksync_types::ExecuteTransactionCommon::L2(_) => Some(tx.try_into().unwrap()),
+                _ => None,
+            })
+            .collect();
+
+        // Collect all transaction hashes and fetch receipts in one call
+        let tx_hashes: Vec<H256> = l2_transactions.iter().map(|tx| tx.hash()).collect();
+        let receipts = connection
+            .transactions_web3_dal()
+            .get_transaction_receipts(&tx_hashes)
+            .await
+            .map_err(DalError::generalize)?;
+        // Create a map from tx_hash -> (gas_used, status)
+        let receipt_map: HashMap<H256, (Option<u64>, bool)> = receipts
+            .into_iter()
+            .map(|receipt| {
+                let tx_hash = receipt.inner.transaction_hash;
+                let gas_used = receipt.inner.gas_used.map(|g| g.as_u64());
+                let status = receipt.inner.status.as_u64() == 1;
+                (tx_hash, (gas_used, status))
+            })
+            .collect();
+
+        let fee_input = if block_args.resolves_to_latest_sealed_l2_block() {
+            // It is important to drop a DB connection before calling the provider, since it acquires a connection internally
+            // on the main node.
+            drop(connection);
+            self.state.tx_sender.scaled_batch_fee_input().await?
+        } else {
+            let fee_input = block_args.historical_fee_input(&mut connection).await?;
+            drop(connection);
+            fee_input
+        };
+
+        let mut debank_transactions = vec![];
+        let mut debank_traces = vec![];
+        let mut debank_errtraces = vec![];
+        let mut debank_events = vec![];
+        let mut debank_errevents = vec![];
+        let mut accumulated_override: Option<StateOverride> = None;
+        for (idx, l2_tx) in l2_transactions.iter().enumerate() {
+            let vm_permit = self
+                .state
+                .tx_sender
+                .vm_concurrency_limiter()
+                .acquire()
+                .await;
+            let vm_permit = vm_permit.context("cannot acquire VM permit")?;
+
+            let tracing_params = OneshotTracingParams { trace_calls: true };
+            let result = self
+                .state
+                .tx_sender
+                .0
+                .executor
+                .execute_in_sandbox(
+                    vm_permit,
+                    self.state.acquire_connection().await?,
+                    SandboxAction::Call {
+                        call: l2_tx.clone(),
+                        fee_input: fee_input.clone(),
+                        enforced_base_fee: None,
+                        tracing_params,
+                    },
+                    &parent_block_args,
+                    accumulated_override.clone(),
+                )
+                .await;
+
+            match result {
+                Ok(execution_result) => {
+                    let mut tx_events = Vec::new();
+                    let next_override = Self::state_override_from_write_logs(&execution_result.write_logs);
+                    accumulated_override = Some(match accumulated_override.take() {
+                        None => next_override,
+                        Some(acc) => Self::merge_state_overrides(acc, next_override),
+                    });
+                    let (gas_fee_cap, gas_tip_cap) = if l2_tx.common_data.transaction_type as u32 >= TransactionType::EIP1559Transaction as u32 {
+                        (
+                            l2_tx.common_data.fee.max_fee_per_gas.as_u64(),
+                            l2_tx.common_data.fee.max_priority_fee_per_gas.as_u64(),
+                        )
+                    } else {
+                        (0, 0)
+                    };
+                    // Get gas_used and status from receipt map, with fallback to execution result
+                    let tx_hash = l2_tx.hash();
+                    let (gas_used, status) = receipt_map
+                        .get(&tx_hash)
+                        .map(|(receipt_gas_used, receipt_status)| {
+                            (
+                                receipt_gas_used.unwrap_or_else(|| {
+                                    execution_result.metrics.vm.gas_used as u64
+                                }),
+                                *receipt_status,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            // Fallback if receipt not found
+                            (
+                                execution_result.metrics.vm.gas_used as u64,
+                                matches!(execution_result.result, ExecutionResult::Success { .. }),
+                            )
+                        });
+                    let debank_transaction = DebankTransaction {
+                        id: l2_tx.hash(),
+                        from: l2_tx.common_data.initiator_address,
+                        to: l2_tx.execute.contract_address,
+                        gas_limit: l2_tx.common_data.fee.gas_limit.low_u64(),
+                        gas_price: l2_tx
+                            .common_data
+                            .fee
+                            .get_effective_gas_price(l2_block.base_fee_per_gas.into())
+                            .low_u64(),
+                        gas_used,
+                        status,
+                        gas_fee_cap,
+                        gas_tip_cap,
+                        input: l2_tx.execute.calldata.clone().into(),
+                        nonce: (*l2_tx.common_data.nonce) as u64,
+                        transaction_index: idx as u32,
+                        value: l2_tx.execute.value,
+                    };
+                    debank_transactions.push(debank_transaction);
+
+                    let (output, revert_reason) = match execution_result.result {
+                        ExecutionResult::Success { output, .. } => (output, None),
+                        ExecutionResult::Revert { output } => (vec![], Some(output.to_string())),
+                        ExecutionResult::Halt { reason } => {
+                            return Err(Web3Error::SubmitTransactionError(
+                                reason.to_string(),
+                                vec![],
+                            ))
+                        }
+                    };
+
+                    let call = Call::new_high_level(
+                        l2_tx.common_data.fee.gas_limit.low_u64(),
+                        execution_result.metrics.vm.gas_used as u64,
+                        l2_tx.execute.value,
+                        l2_tx.execute.calldata.clone(),
+                        output,
+                        revert_reason,
+                        execution_result.call_traces,
+                    );
+
+                    let mut first_call = call;
+                    first_call.trace_id =
+                        debank::to_hash(&[l2_tx.hash().to_string().as_str(), "", "0"]);
+
+                    for (i, subcall) in first_call.calls.iter_mut().enumerate() {
+                        subcall.pos_in_parent_trace = i as u32;
+                    }
+                    debank_traces.push(debank::to_debank_trace(&first_call, l2_tx.hash(), vec![]));
+
+                    debank::add_trace_log(
+                        l2_tx.hash(),
+                        &mut debank_traces,
+                        &mut debank_errtraces,
+                        &mut tx_events,
+                        &mut debank_errevents,
+                        vec![],
+                        &mut first_call,
+                    );
+                    for (log_index, event) in tx_events.iter_mut().enumerate() {
+                        event.log_index = log_index as u32;
+                    }
+                    debank_events.extend(tx_events);
+                }
+                Err(_) => {
+                    // Handle errors during execution
+                    // For example, log the error or take appropriate action
+                }
+            }
+        }
+
+        // Collect to_addrs from traces where self_storage_change is true
+        let mut storage_contracts: Vec<String> = debank_traces
+            .iter()
+            .filter(|trace| trace.self_storage_change)
+            .map(|trace| {
+                if trace.call_type == "delegatecall" {
+                    format!("{:?}", trace.from_addr)
+                } else {
+                    format!("{:?}", trace.to_addr)
+                }
+            })
+            .collect();
+        // Deduplicate while preserving first-seen order.
+        let mut seen = HashSet::new();
+        storage_contracts.retain(|addr| seen.insert(addr.clone()));
+
+        let block_file = BlockFile {
+            block: DebankBlock {
+                id: l2_block.hash,
+                height: l2_block.number.as_u64(),
+                parent_id: l2_block.parent_hash,
+                base_fee_per_gas: Some(l2_block.base_fee_per_gas.as_u64()),
+                gas_limit: l2_block.gas_limit.as_u64(),
+                gas_used: l2_block.gas_used.as_u64(),
+                timestamp: l2_block.timestamp.as_u64(),
+                process_start_timestamp: l2_block.timestamp.as_u64(),
+                ..Default::default()
+            },
+            transactions: debank_transactions,
+            events: debank_events,
+            traces: debank_traces,
+            error_traces: debank_errtraces,
+            error_events: debank_errevents,
+            storage_contracts,
+        };
+
+        let header = Header {
+            number: l2_block.number.as_u64(),
+            hash: l2_block.hash,
+            parent_hash: l2_block.parent_hash,
+            nonce: l2_block.nonce,
+            mix_hash: l2_block.mix_hash,
+            sha3_uncles: l2_block.uncles_hash,
+            logs_bloom: l2_block.logs_bloom,
+            state_root: l2_block.state_root,
+            miner: l2_block.author,
+            difficulty: l2_block.difficulty,
+            extra_data: l2_block.extra_data,
+            gas_limit: l2_block.gas_limit.as_u64(),
+            gas_used: l2_block.gas_used.as_u64(),
+            timestamp: l2_block.timestamp.as_u64(),
+            transactions_root: l2_block.transactions_root,
+            receipts_root: l2_block.receipts_root,
+            base_fee_per_gas: Some(l2_block.base_fee_per_gas),
+            withdrawals_root: None, // Assuming withdrawals_root is not available in l2_block
+            blob_gas_used: None,    // Assuming blob_gas_used is not available in l2_block
+            excess_blob_gas: None,  // Assuming excess_blob_gas is not available in l2_block
+            parent_beacon_block_root: None, // Assuming parent_beacon_block_root is not available in l2_block
+            requests_root: None,            // Assuming requests_root is not available in l2_block
+            ..Default::default()
+        };
+
+        Ok(DebankOutPut {
+            header,
+            validation_hash: block_file.validation().validation_hash,
+            block_file,
+            state_diff: vec![].into(),
+        })
     }
 }
