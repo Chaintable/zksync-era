@@ -187,6 +187,9 @@ impl AsyncCatchupTask {
     }
 }
 
+/// Background task that keeps a caught-up RocksDB cache synchronized with Postgres.
+///
+/// This task is designed to be run after [`AsyncCatchupTask`] completes and publishes a ready RocksDB instance.
 #[derive(Debug)]
 pub struct KeepUpdatedTask {
     db: AsyncOnceCell<RocksdbStorage>,
@@ -194,6 +197,7 @@ pub struct KeepUpdatedTask {
 }
 
 impl KeepUpdatedTask {
+    /// Runs an infinite loop that periodically synchronizes RocksDB with Postgres.
     pub async fn run(mut self, mut stop_receiver: watch::Receiver<bool>) -> anyhow::Result<()> {
         const SLEEP_INTERVAL: Duration = Duration::from_millis(100);
 

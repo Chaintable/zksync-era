@@ -16,7 +16,10 @@ use zksync_types::{
         BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, DebugCall, DebugCallType,
         ResultDebugCall, SupportedTracers, TracerConfig,
     },
-    debank::{BlockFile, DebankBlock, DebankOutPut, DebankTransaction, Header},
+    debank::{
+        BlockFile, DebankBlock, DebankOutPut, DebankSimulateResp, DebankSimulateStats,
+        DebankSingleSimulateResult, DebankTransaction, Header,
+    },
     debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat},
     l2::{L2Tx, TransactionType},
     transaction_request::CallRequest,
@@ -736,6 +739,201 @@ impl DebugNamespace {
             }
         }
         return Ok(pre_res_vec);
+    }
+
+    #[allow(dead_code)]
+    pub async fn debank_simulate_transactions_impl(
+        &self,
+        mut requests: Vec<CallRequest>,
+        block_id: Option<BlockId>,
+    ) -> Result<DebankSimulateResp, Web3Error> {
+        let block_id = block_id.unwrap_or(BlockId::Number(BlockNumber::Latest));
+        self.current_method().set_block_id(block_id);
+
+        let mut connection = self.state.acquire_connection().await?;
+        let call_overrides = requests
+            .first()
+            .ok_or_else(|| Web3Error::InternalError(anyhow::anyhow!("empty request list")))?
+            .get_call_overrides()?;
+        let block_args = self
+            .state
+            .resolve_block_args(&mut connection, block_id)
+            .await?;
+        let fee_input = if block_args.resolves_to_latest_sealed_l2_block() {
+            let scale_factor = self.state.api_config.estimate_gas_scale_factor;
+            let fee_input_provider = &self.state.tx_sender.0.batch_fee_input_provider;
+            fee_input_provider
+                .get_batch_fee_input_scaled(scale_factor, scale_factor)
+                .await?
+        } else {
+            block_args.historical_fee_input(&mut connection).await?
+        };
+        let block_hash = connection
+            .blocks_web3_dal()
+            .get_l2_block_hash(block_args.resolved_block_number())
+            .await
+            .map_err(|_| Web3Error::NoBlock)?;
+        let block_time = connection
+            .blocks_web3_dal()
+            .get_api_block(block_args.resolved_block_number())
+            .await
+            .map_err(DalError::generalize)?
+            .map(|block| block.timestamp.as_u64())
+            .unwrap_or_default();
+        self.current_method().set_block_diff(
+            self.state
+                .last_sealed_l2_block
+                .diff_with_block_args(&block_args),
+        );
+
+        let gas = Some(
+            block_args
+                .default_eth_call_gas(&mut connection, self.state.api_config.eth_call_gas_cap)
+                .await?,
+        );
+        for request in requests.iter_mut() {
+            if request.gas.is_none() {
+                request.gas = gas.clone();
+            }
+        }
+        let txs = requests
+            .into_iter()
+            .map(|request| L2Tx::from_request(request.into(), MAX_ENCODED_TX_SIZE, true))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let executor = &self.state.tx_sender.0.executor;
+        let mut results = Vec::with_capacity(txs.len());
+        let mut accumulated_override: Option<StateOverride> = None;
+        for tx in txs.iter() {
+            let vm_permit = self
+                .state
+                .tx_sender
+                .vm_concurrency_limiter()
+                .acquire()
+                .await;
+            let vm_permit = match vm_permit {
+                Some(permit) => permit,
+                None => {
+                    results.push(DebankSingleSimulateResult {
+                        code: 1000,
+                        err: "cannot acquire VM permit".to_string(),
+                        ..Default::default()
+                    });
+                    continue;
+                }
+            };
+
+            let result = executor
+                .execute_in_sandbox(
+                    vm_permit,
+                    self.state.acquire_connection().await?,
+                    SandboxAction::Call {
+                        call: tx.clone(),
+                        fee_input: fee_input.clone(),
+                        enforced_base_fee: call_overrides.enforced_base_fee,
+                        tracing_params: OneshotTracingParams { trace_calls: true },
+                    },
+                    &block_args,
+                    accumulated_override.clone(),
+                )
+                .await;
+
+            match result {
+                Ok(result) => {
+                    let gas_used = result.metrics.vm.gas_used as u64;
+                    let (output, revert_reason, error) = match result.result {
+                        ExecutionResult::Success { output, .. } => (output, None, None),
+                        ExecutionResult::Revert { output } => (
+                            vec![],
+                            Some(output.to_string()),
+                            Some((1002, output.to_string())),
+                        ),
+                        ExecutionResult::Halt { reason } => {
+                            (vec![], None, Some((1000, reason.to_string())))
+                        }
+                    };
+
+                    if let Some((code, err)) = error {
+                        results.push(DebankSingleSimulateResult {
+                            code,
+                            err,
+                            gas_used,
+                            ..Default::default()
+                        });
+                        continue;
+                    }
+
+                    let next_override = Self::state_override_from_write_logs(&result.write_logs);
+                    accumulated_override = Some(match accumulated_override.take() {
+                        None => next_override,
+                        Some(acc) => Self::merge_state_overrides(acc, next_override),
+                    });
+
+                    let call = Call::new_high_level(
+                        tx.common_data.fee.gas_limit.as_u64(),
+                        gas_used,
+                        tx.execute.value,
+                        tx.execute.calldata.clone(),
+                        output,
+                        revert_reason,
+                        result.call_traces,
+                    );
+                    let transaction_hash = H256::random();
+                    let mut first_call = call;
+                    first_call.trace_id =
+                        debank::to_hash(&[transaction_hash.to_string().as_str(), "", "0"]);
+                    for (idx, subcall) in first_call.calls.iter_mut().enumerate() {
+                        subcall.pos_in_parent_trace = idx as u32;
+                    }
+
+                    let mut traces = vec![debank::to_debank_trace(
+                        &first_call,
+                        transaction_hash,
+                        vec![],
+                    )];
+                    let mut error_traces = Vec::new();
+                    let mut events = Vec::new();
+                    let mut error_events = Vec::new();
+                    debank::add_trace_log(
+                        transaction_hash,
+                        &mut traces,
+                        &mut error_traces,
+                        &mut events,
+                        &mut error_events,
+                        vec![],
+                        &mut first_call,
+                    );
+                    for (log_index, event) in events.iter_mut().enumerate() {
+                        event.log_index = log_index as u32;
+                    }
+
+                    results.push(DebankSingleSimulateResult {
+                        traces,
+                        events,
+                        gas_used,
+                        ..Default::default()
+                    });
+                }
+                Err(e) => {
+                    results.push(DebankSingleSimulateResult {
+                        code: 1000,
+                        err: format!("Sandbox execution error: {e}"),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+
+        let success = results.iter().all(|result| result.code == 0);
+        Ok(DebankSimulateResp {
+            results,
+            stats: DebankSimulateStats {
+                block_num: block_args.resolved_block_number().0 as u64,
+                block_hash: block_hash.unwrap_or_default(),
+                block_time,
+                success,
+            },
+        })
     }
 
     async fn trace_debank_genesis_block_impl(

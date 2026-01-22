@@ -12,6 +12,7 @@ use fee::encoding_len;
 pub use l1::L1TxCommonData;
 pub use l2::L2TxCommonData;
 pub use protocol_upgrade::{ProtocolUpgrade, ProtocolVersion};
+pub use debank::DebankSimulateResp;
 use serde::{Deserialize, Serialize};
 pub use storage::*;
 pub use tx::Execute;

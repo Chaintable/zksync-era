@@ -5,6 +5,7 @@ use zksync_config::{
         api::{HealthCheckConfig, MerkleTreeApiConfig, Web3JsonRpcConfig},
         chain::{SharedStateKeeperConfig, TimestampAsserterConfig},
         consensus::ConsensusConfig,
+        etcd::EtcdRegisterConfig,
         networks::{NetworksConfig, SharedL1ContractsConfig},
         CommitmentGeneratorConfig, ConsistencyCheckerConfig, DataAvailabilitySecrets, L1Secrets,
         NodeSyncConfig, ObservabilityConfig, PrometheusConfig, PruningConfig, Secrets,
@@ -55,6 +56,8 @@ pub(crate) struct LocalConfig {
     pub secrets: Secrets,
     #[config(nest)]
     pub node_sync: NodeSyncConfig,
+    #[config(nest, rename = "etcd_register")]
+    pub etcd_register: Option<EtcdRegisterConfig>,
 }
 
 impl LocalConfig {
@@ -147,6 +150,7 @@ impl LocalConfig {
                 contract_verifier: ContractVerifierSecrets::default(),
             },
             node_sync: NodeSyncConfig::default(),
+            etcd_register: None,
         }
     }
 }

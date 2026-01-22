@@ -97,6 +97,8 @@ pub struct GeneralConfig {
     pub gateway_migrator_config: GatewayMigratorConfig,
     #[config(nest, rename = "consistency_checker")]
     pub consistency_checker_config: ConsistencyCheckerConfig,
+    #[config(nest, rename = "etcd_register")]
+    pub etcd_register: Option<crate::configs::EtcdRegisterConfig>,
 }
 
 /// Returns the config schema for the main node.

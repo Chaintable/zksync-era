@@ -31,6 +31,21 @@ To run the binary:
 ZKSYNC_ENV=ext-node zk f cargo run --release --bin zksync_external_node
 ```
 
+### RPC mode (no syncing / re-execution)
+
+The external node supports a lightweight `rpc` mode intended for serving RPC from an **externally managed** PostgreSQL
+database (e.g. restored from a dump and kept up-to-date by other means). In this mode the node:
+
+- does **not** run core syncing / re-execution tasks
+- does **not** attempt DB initialization / migrations
+- only runs RPC components (`http_api` / `ws_api`)
+
+Example:
+
+```sh
+ZKSYNC_ENV=ext-node EN_NODE_MODE=rpc zk f cargo run --release --bin zksync_external_node -- --components api
+```
+
 ### Clearing the state
 
 This command will reset the Postgres and RocksDB databases used by the external node:

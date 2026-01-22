@@ -3,7 +3,7 @@ use std::time::Duration;
 use zksync_dal::{ConnectionPool, Core, CoreDal};
 use zksync_node_framework::{StopReceiver, Task, TaskId};
 
-use crate::web3::state::SealedL2BlockNumber;
+use crate::web3::{metrics::PIPELINE_METRICS, state::SealedL2BlockNumber};
 
 #[derive(Debug)]
 pub struct SealedL2BlockUpdaterTask {
@@ -32,9 +32,15 @@ impl Task for SealedL2BlockUpdaterTask {
                 tokio::time::sleep(UPDATE_INTERVAL).await;
                 continue;
             };
+            let last_sealed_l1_batch =
+                connection.blocks_dal().get_sealed_l1_batch_number_and_timestamp().await?;
             drop(connection);
 
             self.number_updater.update(last_sealed_l2_block);
+            PIPELINE_METRICS.block_num.set(last_sealed_l2_block.0.into());
+            if let Some((_, batch_timestamp)) = last_sealed_l1_batch {
+                PIPELINE_METRICS.block_time.set(batch_timestamp as i64);
+            }
 
             if tokio::time::timeout(UPDATE_INTERVAL, stop_receiver.0.changed())
                 .await

@@ -66,6 +66,16 @@ Sample running command:
 docker run --env-file <path_to_env_file> --mount type=bind,source=<local_rocksdb_data_path>,target=<configured_rocksdb_data_path> <image>
 ```
 
+## RPC mode (serve from an externally managed DB)
+
+The external node supports `rpc` mode intended for serving RPC using an **existing PostgreSQL database** without running
+the syncing / re-execution pipeline.
+
+- Set `EN_NODE_MODE=rpc` (or pass `--mode rpc`).
+- Run only API components (e.g. `--components api`).
+- The node will build and **keep updating** its local RocksDB State Keeper cache by continuously syncing it from Postgres.
+- In the Docker image, `rpc` mode skips `sqlx database setup` so the container does **not** assume it can run migrations.
+
 Helm charts and other infrastructure configuration options, if required, would be available later.
 
 ## First start

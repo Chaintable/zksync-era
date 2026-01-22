@@ -23,6 +23,24 @@ use zksync_types::{
     L2ChainId,
 };
 
+/// Debank-style block context.
+///
+/// JSON shape (as required by certain third-party clients):
+/// `{ "block_id": "0x0", "type": "Equals" }`
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DebankBlockContext {
+    #[serde(rename = "block_id")]
+    pub block_id: zksync_types::api::BlockIdVariant,
+    #[serde(rename = "type")]
+    pub r#type: DebankBlockContextType,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum DebankBlockContextType {
+    Equals,
+}
+
 /// Token in the ZKsync network
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

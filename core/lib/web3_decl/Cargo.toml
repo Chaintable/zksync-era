@@ -12,6 +12,8 @@ categories.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+alloy-rpc-types.workspace = true
+alloy-primitives.workspace = true
 serde.workspace = true
 rlp.workspace = true
 thiserror.workspace = true

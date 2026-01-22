@@ -13,6 +13,7 @@ use zksync_types::L1BatchNumber;
 use crate::config::{generate_consensus_secrets, ExternalNodeConfig, LocalConfig};
 
 mod config;
+mod etcd_register;
 mod metadata;
 mod metrics;
 mod node_builder;
@@ -37,6 +38,14 @@ enum Command {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum RunMode {
+    /// Full external node mode: sync + re-execute blocks and persist state to Postgres.
+    Full,
+    /// RPC-only mode: connect to an existing Postgres instance and serve RPC without syncing / re-execution.
+    Rpc,
+}
+
 /// External node for ZKsync Era.
 #[derive(Debug, Parser)]
 #[command(author = "Matter Labs", version)]
@@ -48,6 +57,10 @@ struct Cli {
     /// do not use unless you know what you're doing.
     #[arg(long)]
     enable_consensus: bool,
+
+    /// Node running mode.
+    #[arg(long, value_enum, default_value_t = RunMode::Full, env = "EN_NODE_MODE")]
+    mode: RunMode,
 
     /// Comma-separated list of components to launch.
     #[arg(long, default_value = "all")]
@@ -189,12 +202,17 @@ fn main() -> anyhow::Result<()> {
     let config = ExternalNodeConfig::new(repo, opt.enable_consensus)?;
 
     if let Some(l1_batch) = revert_to_l1_batch {
+        anyhow::ensure!(
+            opt.mode == RunMode::Full,
+            "Revert is only supported in full mode (sync + re-exec)"
+        );
         let node = ExternalNodeBuilder::on_runtime(runtime, config).build_for_revert(l1_batch)?;
         node.run(observability)?;
         return Ok(());
     }
 
     let node = ExternalNodeBuilder::on_runtime(runtime, config)
+        .with_mode(opt.mode)
         .build(opt.components.0.into_iter().collect())?;
     node.run(observability)?;
     Ok(())

@@ -107,6 +107,35 @@ pub struct DebankEvent {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct DebankSimulateResp {
+    pub results: Vec<DebankSingleSimulateResult>,
+    pub stats: DebankSimulateStats,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebankSingleSimulateResult {
+    pub traces: Vec<DebankTrace>,
+    pub events: Vec<DebankEvent>,
+    pub code: i32,
+    pub err: String,
+    pub gas_used: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebankSimulateStats {
+    /// blockNum
+    pub block_num: u64,
+    /// blockHash
+    pub block_hash: H256,
+    /// blockTime
+    pub block_time: u64,
+    /// success
+    pub success: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct BlockValidation {
     pub validation_hash: i64,
