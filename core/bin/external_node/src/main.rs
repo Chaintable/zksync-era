@@ -215,7 +215,7 @@ fn main() -> anyhow::Result<()> {
     let node = ExternalNodeBuilder::on_runtime(runtime, config)
         .with_mode(opt.mode)
         .build(opt.components.0.into_iter().collect())?;
-    let role = if opt.mode == RunMode::Rpc { "rpc" } else { "writer" };
+    let role = if opt.mode == RunMode::Rpc { "replica" } else { "writer" };
     set_pipeline_node_role(role);
     node.run(observability)?;
     Ok(())
