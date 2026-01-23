@@ -1,5 +1,6 @@
 use anyhow::Context as _;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 use zksync_dal::{CoreDal, DalError};
 use zksync_multivm::{
     interface::{Call, CallType, ExecutionResult, OneshotTracingParams},
@@ -32,12 +33,35 @@ use zksync_web3_decl::error::Web3Error;
 
 use crate::{
     execution_sandbox::SandboxAction,
-    web3::{backend_jsonrpsee::MethodTracer, namespaces::validate_gas_cap, state::RpcState},
+    web3::{
+        backend_jsonrpsee::MethodTracer, metrics::CHAIN_INSERTS_METRICS,
+        namespaces::validate_gas_cap, state::RpcState,
+    },
 };
 
 #[derive(Debug, Clone)]
 pub(crate) struct DebugNamespace {
     state: RpcState,
+}
+
+struct ChainInsertsTimer {
+    started_at: Instant,
+}
+
+impl ChainInsertsTimer {
+    fn start() -> Self {
+        Self {
+            started_at: Instant::now(),
+        }
+    }
+}
+
+impl Drop for ChainInsertsTimer {
+    fn drop(&mut self) {
+        CHAIN_INSERTS_METRICS
+            .inserts
+            .observe(self.started_at.elapsed());
+    }
 }
 
 impl DebugNamespace {
@@ -1011,6 +1035,7 @@ impl DebugNamespace {
         &self,
         block_id: BlockId,
     ) -> Result<DebankOutPut, Web3Error> {
+        let _timer = ChainInsertsTimer::start();
         self.current_method().set_block_id(block_id);
         let mut connection = self.state.acquire_connection().await?;
 
@@ -1030,23 +1055,25 @@ impl DebugNamespace {
         );
 
         let block_number = self.state.resolve_block(&mut connection, block_id).await?;
-        
-        // Handle genesis block separately
-        if block_number.0 == 0 {
-            return self.trace_debank_genesis_block_impl(block_id).await;
-        }
-        
-        let parent_block_args = self.state.resolve_block_args(&mut connection, BlockId::Number((block_number - 1).0.into())).await?;
 
-        let l2_block = match connection
-            .blocks_web3_dal()
-            .get_api_block(block_number)
-            .await
-            .map_err(DalError::generalize)?
-        {
-            Some(block) => block,
-            None => return Err(Web3Error::NoBlock),
-        };
+        let result = if block_number.0 == 0 {
+            // Handle genesis block separately
+            self.trace_debank_genesis_block_impl(block_id).await
+        } else {
+            let parent_block_args = self
+                .state
+                .resolve_block_args(&mut connection, BlockId::Number((block_number - 1).0.into()))
+                .await?;
+
+            let l2_block = match connection
+                .blocks_web3_dal()
+                .get_api_block(block_number)
+                .await
+                .map_err(DalError::generalize)?
+            {
+                Some(block) => block,
+                None => return Err(Web3Error::NoBlock),
+            };
 
         let raw_transactions = connection
             .transactions_web3_dal()
@@ -1295,11 +1322,14 @@ impl DebugNamespace {
             ..Default::default()
         };
 
-        Ok(DebankOutPut {
-            header,
-            validation_hash: block_file.validation().validation_hash,
-            block_file,
-            state_diff: vec![].into(),
-        })
+            Ok(DebankOutPut {
+                header,
+                validation_hash: block_file.validation().validation_hash,
+                block_file,
+                state_diff: vec![].into(),
+            })
+        };
+
+        result
     }
 }

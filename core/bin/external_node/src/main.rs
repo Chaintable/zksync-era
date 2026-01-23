@@ -8,6 +8,7 @@ use zksync_config::{
     cli::ConfigArgs,
     sources::{ConfigFilePaths, ConfigSources},
 };
+use zksync_node_api_server::web3::set_pipeline_node_role;
 use zksync_types::L1BatchNumber;
 
 use crate::config::{generate_consensus_secrets, ExternalNodeConfig, LocalConfig};
@@ -214,6 +215,8 @@ fn main() -> anyhow::Result<()> {
     let node = ExternalNodeBuilder::on_runtime(runtime, config)
         .with_mode(opt.mode)
         .build(opt.components.0.into_iter().collect())?;
+    let role = if opt.mode == RunMode::Rpc { "rpc" } else { "writer" };
+    set_pipeline_node_role(role);
     node.run(observability)?;
     Ok(())
 }

@@ -38,7 +38,7 @@ use self::{
         TrafficTracker,
     },
     mempool_cache::MempoolCache,
-    metrics::API_METRICS,
+    metrics::{ApiTransportLabel, NodeRoleLabel, API_METRICS, PIPELINE_NODE_INFO_METRICS},
     namespaces::{
         DebankNamespace, DebugNamespace, EnNamespace, EthNamespace, NetNamespace,
         SnapshotsNamespace, UnstableNamespace, Web3Namespace, ZksNamespace,
@@ -50,8 +50,12 @@ use self::{
 use crate::{
     execution_sandbox::{BlockStartInfo, VmConcurrencyBarrier},
     tx_sender::TxSender,
-    web3::{backend_jsonrpsee::ServerTimeoutMiddleware, metrics::ApiTransportLabel},
+    web3::backend_jsonrpsee::ServerTimeoutMiddleware,
 };
+
+pub fn set_pipeline_node_role(role: &'static str) {
+    PIPELINE_NODE_INFO_METRICS.node_info[&NodeRoleLabel { role }].set(1);
+}
 
 pub mod backend_jsonrpsee;
 pub mod mempool_cache;

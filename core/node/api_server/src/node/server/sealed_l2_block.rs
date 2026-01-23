@@ -38,6 +38,9 @@ impl Task for SealedL2BlockUpdaterTask {
 
             self.number_updater.update(last_sealed_l2_block);
             PIPELINE_METRICS.block_num.set(last_sealed_l2_block.0.into());
+            PIPELINE_METRICS
+                .chain_head_block
+                .set(last_sealed_l2_block.0.into());
             if let Some((_, batch_timestamp)) = last_sealed_l1_batch {
                 PIPELINE_METRICS.block_time.set(batch_timestamp as i64);
             }

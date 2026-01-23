@@ -516,11 +516,38 @@ pub(crate) static LEAFAGE_RPC_METRICS: vise::Global<LeafageRpcMetrics> = vise::G
 #[metrics(prefix = "pipeline")]
 pub(crate) struct PipelineMetrics {
     pub block_num: Gauge,
+    pub chain_head_block: Gauge,
     pub block_time: Gauge,
 }
 
 #[vise::register]
 pub(crate) static PIPELINE_METRICS: vise::Global<PipelineMetrics> = vise::Global::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelSet)]
+pub(crate) struct NodeRoleLabel {
+    pub role: &'static str,
+}
+
+#[derive(Debug, Metrics)]
+#[metrics(prefix = "pipeline")]
+pub(crate) struct PipelineNodeInfoMetrics {
+    pub node_info: Family<NodeRoleLabel, Gauge>,
+}
+
+#[vise::register]
+pub(crate) static PIPELINE_NODE_INFO_METRICS: vise::Global<PipelineNodeInfoMetrics> =
+    vise::Global::new();
+
+#[derive(Debug, Metrics)]
+#[metrics(prefix = "chain")]
+pub(crate) struct ChainInsertsMetrics {
+    #[metrics(unit = Unit::Seconds, buckets = Buckets::LATENCIES)]
+    pub inserts: Histogram<Duration>,
+}
+
+#[vise::register]
+pub(crate) static CHAIN_INSERTS_METRICS: vise::Global<ChainInsertsMetrics> =
+    vise::Global::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue, EncodeLabelSet)]
 #[metrics(label = "stage", rename_all = "snake_case")]
