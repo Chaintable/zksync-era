@@ -3,7 +3,7 @@ use std::time::Duration;
 use zksync_dal::{ConnectionPool, Core, CoreDal};
 use zksync_node_framework::{StopReceiver, Task, TaskId};
 
-use crate::web3::{metrics::PIPELINE_METRICS, state::SealedL2BlockNumber};
+use crate::web3::{metrics::{CHAIN_HEAD_METRICS, PIPELINE_METRICS}, state::SealedL2BlockNumber};
 
 #[derive(Debug)]
 pub struct SealedL2BlockUpdaterTask {
@@ -38,7 +38,7 @@ impl Task for SealedL2BlockUpdaterTask {
 
             self.number_updater.update(last_sealed_l2_block);
             PIPELINE_METRICS.block_num.set(last_sealed_l2_block.0.into());
-            PIPELINE_METRICS
+            CHAIN_HEAD_METRICS
                 .chain_head_block
                 .set(last_sealed_l2_block.0.into());
             if let Some((_, batch_timestamp)) = last_sealed_l1_batch {

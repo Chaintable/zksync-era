@@ -516,12 +516,19 @@ pub(crate) static LEAFAGE_RPC_METRICS: vise::Global<LeafageRpcMetrics> = vise::G
 #[metrics(prefix = "pipeline")]
 pub(crate) struct PipelineMetrics {
     pub block_num: Gauge,
-    pub chain_head_block: Gauge,
     pub block_time: Gauge,
 }
 
 #[vise::register]
 pub(crate) static PIPELINE_METRICS: vise::Global<PipelineMetrics> = vise::Global::new();
+
+#[derive(Debug, Metrics)]
+pub(crate) struct ChainHeadMetrics {
+    pub chain_head_block: Gauge,
+}
+
+#[vise::register]
+pub(crate) static CHAIN_HEAD_METRICS: vise::Global<ChainHeadMetrics> = vise::Global::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelSet)]
 pub(crate) struct NodeRoleLabel {

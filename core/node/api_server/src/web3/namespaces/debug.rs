@@ -24,6 +24,7 @@ use zksync_types::{
     debug_flat_call::{Action, CallResult, CallTraceMeta, DebugCallFlat, ResultDebugCallFlat},
     l2::{L2Tx, TransactionType},
     transaction_request::CallRequest,
+    utils::deployed_address_evm_create,
     web3,
     web3::Bytes,
     zk_evm_types::FarCallOpcode,
@@ -1188,10 +1189,18 @@ impl DebugNamespace {
                                 matches!(execution_result.result, ExecutionResult::Success { .. }),
                             )
                         });
+                    // For contract creation transactions, l2_tx.execute.contract_address is None,
+                    // so we calculate the deployed contract address using the sender and nonce
+                    let to_address = l2_tx.execute.contract_address.or_else(|| {
+                        Some(deployed_address_evm_create(
+                            l2_tx.common_data.initiator_address,
+                            (*l2_tx.common_data.nonce).into(),
+                        ))
+                    });
                     let debank_transaction = DebankTransaction {
                         id: l2_tx.hash(),
                         from: l2_tx.common_data.initiator_address,
-                        to: l2_tx.execute.contract_address,
+                        to: to_address,
                         gas_limit: l2_tx.common_data.fee.gas_limit.low_u64(),
                         gas_price: l2_tx
                             .common_data
