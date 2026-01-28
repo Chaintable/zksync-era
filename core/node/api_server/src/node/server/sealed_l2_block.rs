@@ -26,14 +26,12 @@ impl Task for SealedL2BlockUpdaterTask {
 
         while !*stop_receiver.0.borrow_and_update() {
             let mut connection = self.pool.connection_tagged("api").await.unwrap();
-            let Some(last_sealed_l2_block) =
-                connection.blocks_dal().get_sealed_l2_block_number().await?
+            let Some((last_sealed_l2_block, l2_block_timestamp)) =
+                connection.blocks_dal().get_sealed_l2_block_number_and_timestamp().await?
             else {
                 tokio::time::sleep(UPDATE_INTERVAL).await;
                 continue;
             };
-            let last_sealed_l1_batch =
-                connection.blocks_dal().get_sealed_l1_batch_number_and_timestamp().await?;
             drop(connection);
 
             self.number_updater.update(last_sealed_l2_block);
@@ -41,9 +39,7 @@ impl Task for SealedL2BlockUpdaterTask {
             CHAIN_HEAD_METRICS
                 .chain_head_block
                 .set(last_sealed_l2_block.0.into());
-            if let Some((_, batch_timestamp)) = last_sealed_l1_batch {
-                PIPELINE_METRICS.block_time.set(batch_timestamp as i64);
-            }
+            PIPELINE_METRICS.block_time.set(l2_block_timestamp as i64);
 
             if tokio::time::timeout(UPDATE_INTERVAL, stop_receiver.0.changed())
                 .await
