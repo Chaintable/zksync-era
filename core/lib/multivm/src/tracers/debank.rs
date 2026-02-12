@@ -47,7 +47,7 @@ pub fn add_trace_log(
             parent_trace_id: cf.trace_id.clone(),
             pos_in_parent_trace,
             id: to_hash(&[&cf.trace_id, &pos_in_parent_trace.to_string()]),
-            tx_id: Some(tx_hash.as_fixed_bytes().into()),
+            tx_id: format!("{:#x}", tx_hash),
             contract_id: vm_event.address.as_fixed_bytes().into(),
             selector: vm_event
                 .indexed_topics
@@ -110,7 +110,7 @@ pub fn to_debank_trace(call: &Call, tx_hash: H256, trace_addresses: Vec<u32>) ->
         output: call.output.clone().into(),
         call_create_type,
         call_type,
-        tx_id: Some(tx_hash),
+        tx_id: format!("{:#x}", tx_hash),
         parent_trace_id: call.parent_trace_id.clone().unwrap_or_default(),
         pos_in_parent_trace: call.pos_in_parent_trace,
         self_storage_change: call.self_storage_change,

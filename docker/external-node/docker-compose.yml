@@ -1,0 +1,32 @@
+services:
+  external-node:
+    build:
+      context: ../..
+      dockerfile: docker/external-node/Dockerfile
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - external-node-data:/db
+    ports:
+      - "3060:3060"
+      - "3061:3061"
+
+  s3-backfill:
+    build:
+      context: ../..
+      dockerfile: docker/external-node/Dockerfile
+    entrypoint: ["zksync_s3_backfill"]
+    command:
+      - "--mainnet-rpc-url=https://mainnet.era.zksync.io"
+      - "--start-block=0"
+      - "--end-block=13083680"
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-northeast-1}
+    profiles:
+      - backfill
+
+volumes:
+  external-node-data:

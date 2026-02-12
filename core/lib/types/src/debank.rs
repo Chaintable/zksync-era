@@ -49,7 +49,7 @@ pub struct DebankBlock {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DebankTransaction {
-    pub id: H256,
+    pub id: String,
     #[serde(rename = "from_addr")]
     pub from: Address,
     #[serde(rename = "to_addr")]
@@ -82,7 +82,7 @@ pub struct DebankTrace {
     #[serde(rename = "type")]
     pub call_create_type: String,
     pub call_type: String,
-    pub tx_id: Option<H256>,
+    pub tx_id: String,
     pub parent_trace_id: String,
     pub pos_in_parent_trace: u32,
     pub self_storage_change: bool,
@@ -99,7 +99,7 @@ pub struct DebankEvent {
     pub selector: String,
     pub topics: Vec<String>,
     pub data: Bytes,
-    pub tx_id: Option<H256>,
+    pub tx_id: String,
     pub parent_trace_id: String,
     pub pos_in_parent_trace: u32,
     #[serde(rename = "idx")]
