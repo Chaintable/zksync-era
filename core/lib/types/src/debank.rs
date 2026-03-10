@@ -5,9 +5,30 @@ use sha1::{Digest, Sha1};
 use std::str::FromStr;
 use zksync_basic_types::{web3::Bytes, Bloom};
 
+mod hex_u64 {
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&format!("0x{:x}", value))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let s = s.strip_prefix("0x").unwrap_or(&s);
+        u64::from_str_radix(s, 16).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Header {
+    #[serde(with = "hex_u64")]
     pub number: u64,
     pub hash: H256,
     pub parent_hash: H256,
@@ -19,16 +40,25 @@ pub struct Header {
     pub miner: Address,
     pub difficulty: U256,
     pub extra_data: Bytes,
+    #[serde(with = "hex_u64")]
     pub gas_limit: u64,
+    #[serde(with = "hex_u64")]
     pub gas_used: u64,
+    #[serde(with = "hex_u64")]
     pub timestamp: u64,
     pub transactions_root: H256,
     pub receipts_root: H256,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub base_fee_per_gas: Option<U256>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub withdrawals_root: Option<H256>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub blob_gas_used: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub excess_blob_gas: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_beacon_block_root: Option<H256>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub requests_root: Option<H256>,
 }
 
