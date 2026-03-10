@@ -1303,8 +1303,8 @@ impl DebugNamespace {
             })
             .collect();
 
-        // For blocks below certain thresholds, use DAL-based retrieval instead of sandbox execution.
-        if block_number.0 < 13083680 {
+        // For Era historical blocks below this threshold, use DAL-based retrieval instead of sandbox execution.
+        if self.state.api_config.l2_chain_id.as_u64() == 324 && block_number.0 < 13083680 {
             return self.trace_debank_historical_block_impl(
                 &mut connection,
                 block_number,
