@@ -48,6 +48,10 @@ impl EthNamespace {
         Self { state }
     }
 
+    pub(crate) fn etcd_register_version(&self) -> &str {
+        &self.state.api_config.etcd_register_version
+    }
+
     pub(crate) fn current_method(&self) -> &MethodTracer {
         &self.state.current_method
     }

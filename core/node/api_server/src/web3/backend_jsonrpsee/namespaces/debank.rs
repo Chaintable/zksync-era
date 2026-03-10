@@ -26,6 +26,7 @@ fn resolve_block_id_variant_from_ctx(
     block_context.map(|ctx| ctx.block_id)
 }
 
+
 fn resolve_block_id_from_ctx(block_context: Option<DebankBlockContext>) -> Option<BlockId> {
     block_context.map(|ctx| ctx.block_id.into())
 }
@@ -272,8 +273,6 @@ impl DebankNamespaceServer for DebankNamespace {
 
     async fn version(&self, _block_context: Option<DebankBlockContext>) -> RpcResult<String> {
         let started_at = std::time::Instant::now();
-        observe_leafage_call("version", started_at, Ok("1.0".to_owned()))
+        observe_leafage_call("version", started_at, Ok(self.eth.etcd_register_version().to_owned()))
     }
 }
-
-
