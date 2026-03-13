@@ -117,8 +117,9 @@ pub struct DebankTrace {
     pub pos_in_parent_trace: u32,
     pub self_storage_change: bool,
     pub storage_change: bool,
-    pub sub_traces: u32,
+    pub subtraces: u32,
     pub trace_address: Vec<u32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
 }
 
@@ -129,6 +130,7 @@ pub struct DebankEvent {
     pub selector: String,
     pub topics: Vec<String>,
     pub data: Bytes,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tx_id: String,
     pub parent_trace_id: String,
     pub pos_in_parent_trace: u32,

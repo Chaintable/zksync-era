@@ -1,7 +1,8 @@
 pub use self::{
     io::{
-        mempool::MempoolIO, L2BlockParams, L2BlockSealerTask, OutputHandler, StateKeeperIO,
-        StateKeeperOutputHandler, StateKeeperPersistence, TreeWritesPersistence,
+        debank_s3_persistence::DebankS3OutputHandler, mempool::MempoolIO, L2BlockParams,
+        L2BlockSealerTask, OutputHandler, StateKeeperIO, StateKeeperOutputHandler,
+        StateKeeperPersistence, TreeWritesPersistence,
     },
     keeper::{StateKeeper, StateKeeperBuilder},
     mempool_actor::MempoolFetcher,

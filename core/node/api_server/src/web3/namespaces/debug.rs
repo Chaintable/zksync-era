@@ -1110,7 +1110,7 @@ impl DebugNamespace {
                 pos_in_parent_trace: 0,
                 self_storage_change: false,
                 storage_change: false,
-                sub_traces: 0,
+                subtraces: 0,
                 trace_address: vec![],
                 error: String::new(),
             });
@@ -1167,7 +1167,7 @@ impl DebugNamespace {
                 pos_in_parent_trace: 0,
                 self_storage_change: false,
                 storage_change: false,
-                sub_traces: 0,
+                subtraces: 0,
                 trace_address: vec![],
                 error: String::new(),
             });
@@ -1788,7 +1788,7 @@ impl DebugNamespace {
             pos_in_parent_trace,
             self_storage_change: false,
             storage_change: false,
-            sub_traces: debug_call.calls.len() as u32,
+            subtraces: debug_call.calls.len() as u32,
             trace_address: trace_address.clone(),
             error: debug_call
                 .revert_reason

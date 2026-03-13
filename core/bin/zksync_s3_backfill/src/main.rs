@@ -344,7 +344,7 @@ async fn process_genesis_block(client: &Client<L2>) -> anyhow::Result<DebankOutP
             pos_in_parent_trace: 0,
             self_storage_change: false,
             storage_change: false,
-            sub_traces: 0,
+            subtraces: 0,
             trace_address: vec![],
             error: String::new(),
         });
@@ -401,7 +401,7 @@ async fn process_genesis_block(client: &Client<L2>) -> anyhow::Result<DebankOutP
             pos_in_parent_trace: 0,
             self_storage_change: false,
             storage_change: false,
-            sub_traces: 0,
+            subtraces: 0,
             trace_address: vec![],
             error: String::new(),
         });
@@ -713,7 +713,7 @@ fn flatten_debug_call_to_debank_traces(
         pos_in_parent_trace,
         self_storage_change: false,
         storage_change: false,
-        sub_traces: debug_call.calls.len() as u32,
+        subtraces: debug_call.calls.len() as u32,
         trace_address: trace_address.clone(),
         error: debug_call
             .revert_reason

@@ -7,5 +7,7 @@ RUN cargo build --manifest-path ./core/Cargo.toml --release --bin zksync_externa
 
 FROM matterlabs/external-node:v29.4.1
 
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /usr/src/zksync/core/target/release/zksync_external_node /usr/bin
 COPY --from=builder /usr/src/zksync/core/target/release/zksync_s3_backfill /usr/bin

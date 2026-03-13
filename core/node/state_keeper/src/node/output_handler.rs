@@ -12,8 +12,8 @@ use zksync_types::L2_ASSET_ROUTER_ADDRESS;
 
 use super::resources::OutputHandlerResource;
 use crate::{
-    io::seal_logic::l2_block_seal_subtasks::L2BlockSealProcess, L2BlockSealerTask, OutputHandler,
-    StateKeeperPersistence, TreeWritesPersistence,
+    io::seal_logic::l2_block_seal_subtasks::L2BlockSealProcess, DebankS3OutputHandler,
+    L2BlockSealerTask, OutputHandler, StateKeeperPersistence, TreeWritesPersistence,
 };
 
 /// Wiring layer for the state keeper output handler.
@@ -41,6 +41,10 @@ pub struct OutputHandlerLayer {
     /// May be set to `false` for nodes that do not participate in the sequencing process (e.g. external nodes)
     /// or run `vm_runner_protective_reads` component.
     protective_reads_persistence_enabled: bool,
+    /// Whether to upload Debank block data to S3 as blocks are sealed.
+    debank_s3_enabled: bool,
+    /// Chain ID used for S3 key paths.
+    chain_id: u64,
 }
 
 #[derive(Debug, FromContext)]
@@ -63,6 +67,8 @@ impl OutputHandlerLayer {
             l2_block_seal_queue_capacity,
             pre_insert_txs: false,
             protective_reads_persistence_enabled: false,
+            debank_s3_enabled: false,
+            chain_id: 0,
         }
     }
 
@@ -76,6 +82,12 @@ impl OutputHandlerLayer {
         protective_reads_persistence_enabled: bool,
     ) -> Self {
         self.protective_reads_persistence_enabled = protective_reads_persistence_enabled;
+        self
+    }
+
+    pub fn with_debank_s3(mut self, enabled: bool, chain_id: u64) -> Self {
+        self.debank_s3_enabled = enabled;
+        self.chain_id = chain_id;
         self
     }
 }
@@ -126,6 +138,11 @@ impl WiringLayer for OutputHandlerLayer {
             .with_handler(Box::new(tree_writes_persistence));
         if let Some(sync_state) = input.sync_state {
             output_handler = output_handler.with_handler(Box::new(sync_state));
+        }
+        if self.debank_s3_enabled {
+            let debank_handler = DebankS3OutputHandler::new(self.chain_id).await;
+            output_handler = output_handler.with_handler(Box::new(debank_handler));
+            tracing::info!("Debank S3 output handler enabled for chain_id={}", self.chain_id);
         }
         let output_handler = OutputHandlerResource(Unique::new(output_handler));
 

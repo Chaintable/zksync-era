@@ -18,6 +18,7 @@ pub use self::{
 use super::seal_criteria::{IoSealCriteria, UnexecutableReason};
 
 pub mod common;
+pub mod debank_s3_persistence;
 pub(crate) mod mempool;
 mod output_handler;
 mod persistence;

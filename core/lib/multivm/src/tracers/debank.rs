@@ -47,7 +47,7 @@ pub fn add_trace_log(
             parent_trace_id: cf.trace_id.clone(),
             pos_in_parent_trace,
             id: to_hash(&[&cf.trace_id, &pos_in_parent_trace.to_string()]),
-            tx_id: format!("{:#x}", tx_hash),
+            tx_id: String::new(),
             contract_id: vm_event.address.as_fixed_bytes().into(),
             selector: vm_event
                 .indexed_topics
@@ -71,7 +71,7 @@ pub fn add_trace_log(
         }
     }
     for (i, subcall) in cf.calls.iter().enumerate() {
-        if subcall.revert_reason.is_some() || subcall.parent_failed {
+        if subcall.revert_reason.is_some() {
             outerrtraces.push(to_debank_trace(
                 &subcall,
                 tx_hash,
@@ -115,7 +115,7 @@ pub fn to_debank_trace(call: &Call, tx_hash: H256, trace_addresses: Vec<u32>) ->
         pos_in_parent_trace: call.pos_in_parent_trace,
         self_storage_change: call.self_storage_change,
         storage_change: call.storage_change,
-        sub_traces: call.calls.len() as u32,
+        subtraces: call.calls.len() as u32,
         trace_address: trace_addresses,
         error: call.revert_reason.clone().unwrap_or_default(),
     }

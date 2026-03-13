@@ -216,6 +216,13 @@ impl ExternalNodeBuilder {
         const OPTIONAL_BYTECODE_COMPRESSION: bool = true;
 
         let queue_capacity = self.config.local.state_keeper.l2_block_seal_queue_capacity;
+
+        // We only need call traces on the external node if the `debug_` namespace is enabled
+        // or if Debank S3 persistence is enabled.
+        // TODO(PLA-1153): this is backwards / unobvious. Can readily use `config.state_keeper.save_call_traces` instead.
+        let debank_s3_enabled = std::env::var("DEBANK_S3_ENABLED")
+            .map_or(false, |v| v == "true" || v == "1");
+
         let persistence_layer = OutputHandlerLayer::new(queue_capacity)
             .with_pre_insert_txs(true) // EN requires txs to be pre-inserted.
             .with_protective_reads_persistence_enabled(
@@ -223,22 +230,21 @@ impl ExternalNodeBuilder {
                     .local
                     .state_keeper
                     .protective_reads_persistence_enabled,
-            );
+            )
+            .with_debank_s3(debank_s3_enabled, self.config.local.networks.l2_chain_id.as_u64());
 
         let io_layer = ExternalIOLayer::new(
             self.config.local.networks.l2_chain_id,
             self.config.local.node_sync.validate_seal_criteria,
         );
-
-        // We only need call traces on the external node if the `debug_` namespace is enabled.
-        // TODO(PLA-1153): this is backwards / unobvious. Can readily use `config.state_keeper.save_call_traces` instead.
         let save_call_traces = self
             .config
             .local
             .api
             .web3_json_rpc
             .api_namespaces
-            .contains(&Namespace::Debug);
+            .contains(&Namespace::Debug)
+            || debank_s3_enabled;
         let main_node_batch_executor_builder_layer =
             MainBatchExecutorLayer::new(save_call_traces, OPTIONAL_BYTECODE_COMPRESSION);
 
