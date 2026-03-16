@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use aws_sdk_s3::Client as S3Client;
@@ -6,6 +7,7 @@ use flate2::{write::GzEncoder, Compression};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
 use rdkafka::ClientConfig;
+use tokio::task::JoinHandle;
 use zksync_multivm::{interface::TxExecutionStatus, tracers::debank};
 use zksync_types::{
     debank::{
@@ -32,6 +34,9 @@ pub struct DebankS3OutputHandler {
     chain_id: u64,
     kafka_producer: Option<FutureProducer>,
     kafka_topic: Option<String>,
+    /// Handle to the previous block's upload task. Awaited before spawning the
+    /// next upload so that S3 writes and Kafka notifications are strictly ordered.
+    pending_upload: Option<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for DebankS3OutputHandler {
@@ -78,7 +83,67 @@ impl DebankS3OutputHandler {
             chain_id,
             kafka_producer,
             kafka_topic,
+            pending_upload: None,
         }
+    }
+
+    /// Wait for the previous block's upload to complete so notifications stay ordered.
+    async fn wait_for_pending_upload(&mut self) {
+        if let Some(handle) = self.pending_upload.take() {
+            if let Err(e) = handle.await {
+                tracing::error!("Previous debank upload task panicked: {:#}", e);
+            }
+        }
+    }
+
+    /// Build output, wait for the previous upload to finish, then spawn the next one.
+    async fn upload_block(&mut self, updates_manager: &UpdatesManager) {
+        let output = self.build_debank_output(updates_manager);
+        let block_number = output.header.number;
+
+        let block_context = KafkaBlockContext {
+            hash: output.header.hash,
+            parent_hash: output.header.parent_hash,
+            block_number: output.header.number,
+            timestamp: output.header.timestamp,
+        };
+
+        // Wait for the previous block's upload to complete before spawning the next one.
+        self.wait_for_pending_upload().await;
+
+        let s3 = self.s3_client.clone();
+        let chain_id = self.chain_id;
+        let kafka_producer = self.kafka_producer.clone();
+        let kafka_topic = self.kafka_topic.clone();
+        self.pending_upload = Some(tokio::spawn(async move {
+            if let Err(e) = upload_to_s3(&s3, chain_id, &output).await {
+                tracing::error!(
+                    "Failed to upload debank data for block {} to S3: {:#}",
+                    block_number,
+                    e
+                );
+                return;
+            }
+            tracing::info!(
+                "Uploaded debank data for block {} to S3 ({} txs, {} traces, {} events)",
+                block_number,
+                output.block_file.transactions.len(),
+                output.block_file.traces.len(),
+                output.block_file.events.len(),
+            );
+
+            if let (Some(producer), Some(topic)) = (kafka_producer, kafka_topic) {
+                if let Err(e) =
+                    send_kafka_notification(&producer, &topic, block_context, block_number).await
+                {
+                    tracing::error!(
+                        "Failed to send Kafka notification for block {}: {:#}",
+                        block_number,
+                        e
+                    );
+                }
+            }
+        }));
     }
 
     fn build_debank_output(&self, updates_manager: &UpdatesManager) -> DebankOutPut {
@@ -274,52 +339,19 @@ impl StateKeeperOutputHandler for DebankS3OutputHandler {
         &mut self,
         updates_manager: &UpdatesManager,
     ) -> anyhow::Result<()> {
-        let output = self.build_debank_output(updates_manager);
-        let block_number = output.header.number;
+        self.upload_block(updates_manager).await;
+        Ok(())
+    }
 
-        let block_context = KafkaBlockContext {
-            hash: output.header.hash,
-            parent_hash: output.header.parent_hash,
-            block_number: output.header.number,
-            timestamp: output.header.timestamp,
-        };
-
-        // Spawn background upload so we don't block the state keeper pipeline
-        let s3 = self.s3_client.clone();
-        let chain_id = self.chain_id;
-        let kafka_producer = self.kafka_producer.clone();
-        let kafka_topic = self.kafka_topic.clone();
-        tokio::spawn(async move {
-            if let Err(e) = upload_to_s3(&s3, chain_id, &output).await {
-                tracing::error!(
-                    "Failed to upload debank data for block {} to S3: {:#}",
-                    block_number,
-                    e
-                );
-                return;
-            }
-            tracing::info!(
-                "Uploaded debank data for block {} to S3 ({} txs, {} traces, {} events)",
-                block_number,
-                output.block_file.transactions.len(),
-                output.block_file.traces.len(),
-                output.block_file.events.len(),
-            );
-
-            // Send Kafka notification after successful S3 upload
-            if let (Some(producer), Some(topic)) = (kafka_producer, kafka_topic) {
-                if let Err(e) =
-                    send_kafka_notification(&producer, &topic, block_context, block_number).await
-                {
-                    tracing::error!(
-                        "Failed to send Kafka notification for block {}: {:#}",
-                        block_number,
-                        e
-                    );
-                }
-            }
-        });
-
+    async fn handle_l1_batch(
+        &mut self,
+        updates_manager: Arc<UpdatesManager>,
+    ) -> anyhow::Result<()> {
+        // The last pending L2 block at batch seal time is the fictive block.
+        // It has 0 executed transactions so handle_l2_block_data is never called for it
+        // (seal_last_pending_block_data skips empty blocks). Upload it here so every
+        // L2 block in the chain is present in S3 / Kafka.
+        self.upload_block(&updates_manager).await;
         Ok(())
     }
 }
