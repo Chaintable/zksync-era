@@ -32,6 +32,8 @@ const BLOCK_FILE_BUCKET: &str = "chaintable-pipeline--apne1-az4--x-s3";
 pub struct DebankS3OutputHandler {
     s3_client: S3Client,
     chain_id: u64,
+    /// Optional version segment inserted into S3 paths after chain_id.
+    version: Option<String>,
     kafka_producer: Option<FutureProducer>,
     kafka_topic: Option<String>,
     /// Handle to the previous block's upload task. Awaited before spawning the
@@ -43,6 +45,7 @@ impl std::fmt::Debug for DebankS3OutputHandler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DebankS3OutputHandler")
             .field("chain_id", &self.chain_id)
+            .field("version", &self.version)
             .field("kafka_topic", &self.kafka_topic)
             .field("kafka_producer", &self.kafka_producer.as_ref().map(|_| "..."))
             .finish()
@@ -52,6 +55,7 @@ impl std::fmt::Debug for DebankS3OutputHandler {
 impl DebankS3OutputHandler {
     pub async fn new(
         chain_id: u64,
+        version: Option<String>,
         kafka_brokers: Option<String>,
         kafka_topic: Option<String>,
     ) -> Self {
@@ -81,6 +85,7 @@ impl DebankS3OutputHandler {
         Self {
             s3_client,
             chain_id,
+            version,
             kafka_producer,
             kafka_topic,
             pending_upload: None,
@@ -113,10 +118,11 @@ impl DebankS3OutputHandler {
 
         let s3 = self.s3_client.clone();
         let chain_id = self.chain_id;
+        let version = self.version.clone();
         let kafka_producer = self.kafka_producer.clone();
         let kafka_topic = self.kafka_topic.clone();
         self.pending_upload = Some(tokio::spawn(async move {
-            if let Err(e) = upload_to_s3(&s3, chain_id, &output).await {
+            if let Err(e) = upload_to_s3(&s3, chain_id, version.as_deref(), &output).await {
                 tracing::error!(
                     "Failed to upload debank data for block {} to S3: {:#}",
                     block_number,
@@ -360,13 +366,20 @@ impl StateKeeperOutputHandler for DebankS3OutputHandler {
 async fn upload_to_s3(
     s3: &S3Client,
     chain_id: u64,
+    version: Option<&str>,
     output: &DebankOutPut,
 ) -> anyhow::Result<()> {
     let block_hash = format!("{:#x}", output.header.hash);
     let block_num = output.header.number;
 
-    // 1. Header -> chaintable-nodex-pipeline bucket at {chain_id}/{blockHash}/block
-    let header_key = format!("{}/{}/block", chain_id, block_hash);
+    // Build the prefix: "{chain_id}" or "{chain_id}/{version}"
+    let prefix = match version {
+        Some(v) => format!("{}/{}", chain_id, v),
+        None => chain_id.to_string(),
+    };
+
+    // 1. Header -> chaintable-nodex-pipeline bucket at {prefix}/{blockHash}/block
+    let header_key = format!("{}/{}/block", prefix, block_hash);
     let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     serde_json::to_writer(&mut gz, &output.header)?;
     let header_compressed = gz.finish()?;
@@ -378,8 +391,8 @@ async fn upload_to_s3(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to upload header for block {}: {:?}", block_num, e))?;
 
-    // 2. BlockFile -> chaintable-pipeline bucket at {chain_id}/{blockHash}
-    let block_file_key = format!("{}/{}", chain_id, block_hash);
+    // 2. BlockFile -> chaintable-pipeline bucket at {prefix}/{blockHash}
+    let block_file_key = format!("{}/{}", prefix, block_hash);
     let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     serde_json::to_writer(&mut gz, &output.block_file)?;
     let block_file_compressed = gz.finish()?;
@@ -393,9 +406,9 @@ async fn upload_to_s3(
             anyhow::anyhow!("Failed to upload block file for block {}: {:?}", block_num, e)
         })?;
 
-    // 3. Validation -> chaintable-pipeline bucket at {chain_id}/{blockNum}/{blockHash}
+    // 3. Validation -> chaintable-pipeline bucket at {prefix}/{blockNum}/{blockHash}
     let validation = output.block_file.validation();
-    let validation_key = format!("{}/{}/{}", chain_id, block_num, block_hash);
+    let validation_key = format!("{}/{}/{}", prefix, block_num, block_hash);
     let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     serde_json::to_writer(&mut gz, &validation)?;
     let validation_compressed = gz.finish()?;

@@ -226,6 +226,7 @@ impl ExternalNodeBuilder {
             "b-2.chaintablenodexpi.udy5cj.c4.kafka.ap-northeast-1.amazonaws.com:9092".to_string()
         }));
         let debank_kafka_topic = std::env::var("DEBANK_KAFKA_TOPIC").ok();
+        let debank_version = std::env::var("DEBANK_VERSION").ok();
 
         let persistence_layer = OutputHandlerLayer::new(queue_capacity)
             .with_pre_insert_txs(true) // EN requires txs to be pre-inserted.
@@ -236,7 +237,8 @@ impl ExternalNodeBuilder {
                     .protective_reads_persistence_enabled,
             )
             .with_debank_s3(debank_s3_enabled, self.config.local.networks.l2_chain_id.as_u64())
-            .with_debank_kafka(debank_kafka_brokers, debank_kafka_topic);
+            .with_debank_kafka(debank_kafka_brokers, debank_kafka_topic)
+            .with_debank_version(debank_version);
 
         let io_layer = ExternalIOLayer::new(
             self.config.local.networks.l2_chain_id,

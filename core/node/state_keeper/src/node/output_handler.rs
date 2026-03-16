@@ -49,6 +49,8 @@ pub struct OutputHandlerLayer {
     debank_kafka_brokers: Option<String>,
     /// Kafka topic for Debank block notifications.
     debank_kafka_topic: Option<String>,
+    /// Optional version segment for Debank S3 paths.
+    debank_version: Option<String>,
 }
 
 #[derive(Debug, FromContext)]
@@ -75,6 +77,7 @@ impl OutputHandlerLayer {
             chain_id: 0,
             debank_kafka_brokers: None,
             debank_kafka_topic: None,
+            debank_version: None,
         }
     }
 
@@ -104,6 +107,11 @@ impl OutputHandlerLayer {
     ) -> Self {
         self.debank_kafka_brokers = brokers;
         self.debank_kafka_topic = topic;
+        self
+    }
+
+    pub fn with_debank_version(mut self, version: Option<String>) -> Self {
+        self.debank_version = version;
         self
     }
 }
@@ -158,12 +166,17 @@ impl WiringLayer for OutputHandlerLayer {
         if self.debank_s3_enabled {
             let debank_handler = DebankS3OutputHandler::new(
                 self.chain_id,
+                self.debank_version.clone(),
                 self.debank_kafka_brokers.clone(),
                 self.debank_kafka_topic.clone(),
             )
             .await;
             output_handler = output_handler.with_handler(Box::new(debank_handler));
-            tracing::info!("Debank S3 output handler enabled for chain_id={}", self.chain_id);
+            tracing::info!(
+                "Debank S3 output handler enabled for chain_id={}, version={:?}",
+                self.chain_id,
+                self.debank_version,
+            );
         }
         let output_handler = OutputHandlerResource(Unique::new(output_handler));
 

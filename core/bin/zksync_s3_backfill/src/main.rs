@@ -173,8 +173,14 @@ async fn upload_to_s3(s3: &S3Client, output: &DebankOutPut) -> anyhow::Result<()
     let block_hash = format!("{:#x}", output.header.hash);
     let block_num = output.header.number;
 
-    // 1. Header → chaintable-nodex-pipeline bucket at 324/<blockHash>/block
-    let header_key = format!("{}/{}/block", CHAIN_ID, block_hash);
+    // Build the prefix: "{chain_id}" or "{chain_id}/{version}"
+    let prefix = match std::env::var("DEBANK_VERSION") {
+        Ok(v) if !v.is_empty() => format!("{}/{}", CHAIN_ID, v),
+        _ => CHAIN_ID.to_string(),
+    };
+
+    // 1. Header → chaintable-nodex-pipeline bucket at {prefix}/<blockHash>/block
+    let header_key = format!("{}/{}/block", prefix, block_hash);
     let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     serde_json::to_writer(&mut gz, &output.header)?;
     let header_compressed = gz.finish()?;
@@ -191,8 +197,8 @@ async fn upload_to_s3(s3: &S3Client, output: &DebankOutPut) -> anyhow::Result<()
         .await
         .context(format!("Failed to upload header for block {}", block_num))?;
 
-    // 2. BlockFile → chaintable-pipeline bucket at 324/<blockHash>
-    let block_file_key = format!("{}/{}", CHAIN_ID, block_hash);
+    // 2. BlockFile → chaintable-pipeline bucket at {prefix}/<blockHash>
+    let block_file_key = format!("{}/{}", prefix, block_hash);
     let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     serde_json::to_writer(&mut gz, &output.block_file)?;
     let block_file_compressed = gz.finish()?;
@@ -212,9 +218,9 @@ async fn upload_to_s3(s3: &S3Client, output: &DebankOutPut) -> anyhow::Result<()
             block_num
         ))?;
 
-    // 3. Validation → chaintable-pipeline bucket at 324/<blockNum>/<blockHash>
+    // 3. Validation → chaintable-pipeline bucket at {prefix}/<blockNum>/<blockHash>
     let validation = output.block_file.validation();
-    let validation_key = format!("{}/{}/{}", CHAIN_ID, block_num, block_hash);
+    let validation_key = format!("{}/{}/{}", prefix, block_num, block_hash);
     let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     serde_json::to_writer(&mut gz, &validation)?;
     let validation_compressed = gz.finish()?;
