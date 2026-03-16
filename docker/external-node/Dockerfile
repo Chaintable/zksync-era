@@ -2,7 +2,7 @@ FROM ghcr.io/matter-labs/zksync-build-base:latest AS builder
 
 WORKDIR /usr/src/zksync
 COPY . .
-RUN apt-get update && apt-get install -y protobuf-compiler
+RUN apt-get update && apt-get install -y protobuf-compiler cmake
 RUN cargo build --manifest-path ./core/Cargo.toml --release --bin zksync_external_node --bin zksync_s3_backfill
 
 FROM matterlabs/external-node:v29.4.1

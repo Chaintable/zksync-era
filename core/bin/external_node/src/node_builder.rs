@@ -222,6 +222,10 @@ impl ExternalNodeBuilder {
         // TODO(PLA-1153): this is backwards / unobvious. Can readily use `config.state_keeper.save_call_traces` instead.
         let debank_s3_enabled = std::env::var("DEBANK_S3_ENABLED")
             .map_or(false, |v| v == "true" || v == "1");
+        let debank_kafka_brokers = Some(std::env::var("DEBANK_KAFKA_BROKERS").unwrap_or_else(|_| {
+            "b-2.chaintablenodexpi.udy5cj.c4.kafka.ap-northeast-1.amazonaws.com:9092".to_string()
+        }));
+        let debank_kafka_topic = std::env::var("DEBANK_KAFKA_TOPIC").ok();
 
         let persistence_layer = OutputHandlerLayer::new(queue_capacity)
             .with_pre_insert_txs(true) // EN requires txs to be pre-inserted.
@@ -231,7 +235,8 @@ impl ExternalNodeBuilder {
                     .state_keeper
                     .protective_reads_persistence_enabled,
             )
-            .with_debank_s3(debank_s3_enabled, self.config.local.networks.l2_chain_id.as_u64());
+            .with_debank_s3(debank_s3_enabled, self.config.local.networks.l2_chain_id.as_u64())
+            .with_debank_kafka(debank_kafka_brokers, debank_kafka_topic);
 
         let io_layer = ExternalIOLayer::new(
             self.config.local.networks.l2_chain_id,

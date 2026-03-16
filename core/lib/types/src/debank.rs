@@ -234,3 +234,23 @@ pub struct DebankOutPut {
     pub state_diff: Bytes,
     pub validation_hash: i64,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KafkaBlockContext {
+    pub hash: H256,
+    pub parent_hash: H256,
+    pub block_number: u64,
+    #[serde(default)]
+    pub timestamp: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KafkaBlockChangeNotification {
+    pub change_type: u64,
+    #[serde(default)]
+    pub new_blocks: Vec<KafkaBlockContext>,
+    #[serde(default)]
+    pub drop_blocks: Vec<KafkaBlockContext>,
+}

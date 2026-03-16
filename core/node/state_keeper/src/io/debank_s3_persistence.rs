@@ -3,9 +3,15 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use aws_sdk_s3::Client as S3Client;
 use flate2::{write::GzEncoder, Compression};
+use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::util::Timeout;
+use rdkafka::ClientConfig;
 use zksync_multivm::{interface::TxExecutionStatus, tracers::debank};
 use zksync_types::{
-    debank::{BlockFile, DebankBlock, DebankOutPut, DebankTransaction, Header},
+    debank::{
+        BlockFile, DebankBlock, DebankOutPut, DebankTransaction, Header,
+        KafkaBlockChangeNotification, KafkaBlockContext,
+    },
     l2::TransactionType,
     utils::deployed_address_evm_create,
     web3::Bytes,
@@ -20,15 +26,30 @@ const HEADER_BUCKET: &str = "chaintable-nodex-pipeline--apne1-az4--x-s3";
 const BLOCK_FILE_BUCKET: &str = "chaintable-pipeline--apne1-az4--x-s3";
 
 /// Output handler that assembles `DebankOutPut` from live block execution
-/// and uploads it to S3 as blocks are sealed.
-#[derive(Debug)]
+/// and uploads it to S3 as blocks are sealed, then sends a Kafka notification.
 pub struct DebankS3OutputHandler {
     s3_client: S3Client,
     chain_id: u64,
+    kafka_producer: Option<FutureProducer>,
+    kafka_topic: Option<String>,
+}
+
+impl std::fmt::Debug for DebankS3OutputHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DebankS3OutputHandler")
+            .field("chain_id", &self.chain_id)
+            .field("kafka_topic", &self.kafka_topic)
+            .field("kafka_producer", &self.kafka_producer.as_ref().map(|_| "..."))
+            .finish()
+    }
 }
 
 impl DebankS3OutputHandler {
-    pub async fn new(chain_id: u64) -> Self {
+    pub async fn new(
+        chain_id: u64,
+        kafka_brokers: Option<String>,
+        kafka_topic: Option<String>,
+    ) -> Self {
         let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .load()
             .await;
@@ -37,7 +58,27 @@ impl DebankS3OutputHandler {
             aws_config.region()
         );
         let s3_client = S3Client::new(&aws_config);
-        Self { s3_client, chain_id }
+
+        let kafka_producer = kafka_brokers.as_ref().map(|brokers| {
+            let producer: FutureProducer = ClientConfig::new()
+                .set("bootstrap.servers", brokers)
+                .set("message.timeout.ms", "5000")
+                .set("enable.idempotence", "true")
+                .create()
+                .expect("Failed to create Kafka producer");
+            tracing::info!(
+                "DebankS3OutputHandler: Kafka producer created for brokers={}",
+                brokers
+            );
+            producer
+        });
+
+        Self {
+            s3_client,
+            chain_id,
+            kafka_producer,
+            kafka_topic,
+        }
     }
 
     fn build_debank_output(&self, updates_manager: &UpdatesManager) -> DebankOutPut {
@@ -236,9 +277,18 @@ impl StateKeeperOutputHandler for DebankS3OutputHandler {
         let output = self.build_debank_output(updates_manager);
         let block_number = output.header.number;
 
+        let block_context = KafkaBlockContext {
+            hash: output.header.hash,
+            parent_hash: output.header.parent_hash,
+            block_number: output.header.number,
+            timestamp: output.header.timestamp,
+        };
+
         // Spawn background upload so we don't block the state keeper pipeline
         let s3 = self.s3_client.clone();
         let chain_id = self.chain_id;
+        let kafka_producer = self.kafka_producer.clone();
+        let kafka_topic = self.kafka_topic.clone();
         tokio::spawn(async move {
             if let Err(e) = upload_to_s3(&s3, chain_id, &output).await {
                 tracing::error!(
@@ -246,14 +296,27 @@ impl StateKeeperOutputHandler for DebankS3OutputHandler {
                     block_number,
                     e
                 );
-            } else {
-                tracing::info!(
-                    "Uploaded debank data for block {} to S3 ({} txs, {} traces, {} events)",
-                    block_number,
-                    output.block_file.transactions.len(),
-                    output.block_file.traces.len(),
-                    output.block_file.events.len(),
-                );
+                return;
+            }
+            tracing::info!(
+                "Uploaded debank data for block {} to S3 ({} txs, {} traces, {} events)",
+                block_number,
+                output.block_file.transactions.len(),
+                output.block_file.traces.len(),
+                output.block_file.events.len(),
+            );
+
+            // Send Kafka notification after successful S3 upload
+            if let (Some(producer), Some(topic)) = (kafka_producer, kafka_topic) {
+                if let Err(e) =
+                    send_kafka_notification(&producer, &topic, block_context, block_number).await
+                {
+                    tracing::error!(
+                        "Failed to send Kafka notification for block {}: {:#}",
+                        block_number,
+                        e
+                    );
+                }
             }
         });
 
@@ -318,5 +381,42 @@ async fn upload_to_s3(
             )
         })?;
 
+    Ok(())
+}
+
+/// Send a block change notification to Kafka (gzip-compressed JSON, key="NewBlock").
+async fn send_kafka_notification(
+    producer: &FutureProducer,
+    topic: &str,
+    block_context: KafkaBlockContext,
+    block_number: u64,
+) -> anyhow::Result<()> {
+    let notification = KafkaBlockChangeNotification {
+        change_type: 1, // New block added
+        new_blocks: vec![block_context],
+        drop_blocks: vec![],
+    };
+
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    serde_json::to_writer(&mut gz, &notification)?;
+    let payload = gz.finish()?;
+
+    let record = FutureRecord::to(topic).key("NewBlock").payload(&payload);
+    producer
+        .send(record, Timeout::Never)
+        .await
+        .map_err(|(e, _)| {
+            anyhow::anyhow!(
+                "Failed to send Kafka notification for block {}: {}",
+                block_number,
+                e
+            )
+        })?;
+
+    tracing::info!(
+        "Sent Kafka block notification for block {} to topic '{}'",
+        block_number,
+        topic
+    );
     Ok(())
 }

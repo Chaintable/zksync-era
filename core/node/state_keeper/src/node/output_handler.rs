@@ -45,6 +45,10 @@ pub struct OutputHandlerLayer {
     debank_s3_enabled: bool,
     /// Chain ID used for S3 key paths.
     chain_id: u64,
+    /// Kafka broker addresses for Debank block notifications.
+    debank_kafka_brokers: Option<String>,
+    /// Kafka topic for Debank block notifications.
+    debank_kafka_topic: Option<String>,
 }
 
 #[derive(Debug, FromContext)]
@@ -69,6 +73,8 @@ impl OutputHandlerLayer {
             protective_reads_persistence_enabled: false,
             debank_s3_enabled: false,
             chain_id: 0,
+            debank_kafka_brokers: None,
+            debank_kafka_topic: None,
         }
     }
 
@@ -88,6 +94,16 @@ impl OutputHandlerLayer {
     pub fn with_debank_s3(mut self, enabled: bool, chain_id: u64) -> Self {
         self.debank_s3_enabled = enabled;
         self.chain_id = chain_id;
+        self
+    }
+
+    pub fn with_debank_kafka(
+        mut self,
+        brokers: Option<String>,
+        topic: Option<String>,
+    ) -> Self {
+        self.debank_kafka_brokers = brokers;
+        self.debank_kafka_topic = topic;
         self
     }
 }
@@ -140,7 +156,12 @@ impl WiringLayer for OutputHandlerLayer {
             output_handler = output_handler.with_handler(Box::new(sync_state));
         }
         if self.debank_s3_enabled {
-            let debank_handler = DebankS3OutputHandler::new(self.chain_id).await;
+            let debank_handler = DebankS3OutputHandler::new(
+                self.chain_id,
+                self.debank_kafka_brokers.clone(),
+                self.debank_kafka_topic.clone(),
+            )
+            .await;
             output_handler = output_handler.with_handler(Box::new(debank_handler));
             tracing::info!("Debank S3 output handler enabled for chain_id={}", self.chain_id);
         }
