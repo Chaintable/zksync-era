@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use aws_sdk_s3::Client as S3Client;
@@ -122,11 +123,35 @@ impl DebankS3OutputHandler {
         let kafka_producer = self.kafka_producer.clone();
         let kafka_topic = self.kafka_topic.clone();
         self.pending_upload = Some(tokio::spawn(async move {
-            if let Err(e) = upload_to_s3(&s3, chain_id, version.as_deref(), &output).await {
+            const MAX_RETRIES: u32 = 5;
+            const INITIAL_BACKOFF: Duration = Duration::from_secs(2);
+
+            let mut uploaded = false;
+            for attempt in 0..MAX_RETRIES {
+                match upload_to_s3(&s3, chain_id, version.as_deref(), &output).await {
+                    Ok(()) => {
+                        uploaded = true;
+                        break;
+                    }
+                    Err(e) => {
+                        let backoff = INITIAL_BACKOFF * 2u32.pow(attempt);
+                        tracing::warn!(
+                            "Failed to upload debank data for block {} to S3 (attempt {}/{}): {:#}. Retrying in {:?}",
+                            block_number,
+                            attempt + 1,
+                            MAX_RETRIES,
+                            e,
+                            backoff,
+                        );
+                        tokio::time::sleep(backoff).await;
+                    }
+                }
+            }
+            if !uploaded {
                 tracing::error!(
-                    "Failed to upload debank data for block {} to S3: {:#}",
+                    "Failed to upload debank data for block {} to S3 after {} attempts, giving up",
                     block_number,
-                    e
+                    MAX_RETRIES,
                 );
                 return;
             }
