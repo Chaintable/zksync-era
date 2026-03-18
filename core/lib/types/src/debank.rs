@@ -145,7 +145,7 @@ pub struct DebankSimulateResp {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct DebankSingleSimulateResult {
     pub traces: Vec<DebankTrace>,
     pub events: Vec<DebankEvent>,
@@ -155,7 +155,7 @@ pub struct DebankSingleSimulateResult {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct DebankSimulateStats {
     /// blockNum
     pub block_num: u64,

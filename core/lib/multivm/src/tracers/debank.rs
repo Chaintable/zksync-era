@@ -47,7 +47,7 @@ pub fn add_trace_log(
             parent_trace_id: cf.trace_id.clone(),
             pos_in_parent_trace,
             id: to_hash(&[&cf.trace_id, &pos_in_parent_trace.to_string()]),
-            tx_id: String::new(),
+            tx_id: format!("{:#x}", tx_hash),
             contract_id: vm_event.address.as_fixed_bytes().into(),
             selector: vm_event
                 .indexed_topics
