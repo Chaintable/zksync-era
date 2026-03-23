@@ -21,6 +21,7 @@ pub struct ExternalNodeInitStrategyLayer {
     pub l2_chain_id: L2ChainId,
     pub max_postgres_concurrency: NonZeroUsize,
     pub snapshot_recovery_config: Option<SnapshotRecoveryConfig>,
+    pub custom_genesis_state_path: Option<String>,
 }
 
 #[derive(Debug, FromContext)]
@@ -60,6 +61,7 @@ impl WiringLayer for ExternalNodeInitStrategyLayer {
             l2_chain_id: self.l2_chain_id,
             client: client.clone(),
             pool: pool.clone(),
+            custom_genesis_state_path: self.custom_genesis_state_path,
         });
         let snapshot_recovery = match self.snapshot_recovery_config {
             Some(recovery_config) => {

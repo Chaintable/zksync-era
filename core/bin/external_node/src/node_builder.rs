@@ -558,10 +558,12 @@ impl ExternalNodeBuilder {
             drop_storage_key_preimages: config.drop_storage_key_preimages,
             object_store_config: config.object_store.clone(),
         });
+        let custom_genesis_state_path = std::env::var("EN_CUSTOM_GENESIS_STATE_PATH").ok();
         self.node.add_layer(ExternalNodeInitStrategyLayer {
             l2_chain_id: self.config.local.networks.l2_chain_id,
             max_postgres_concurrency: config.postgres.max_concurrency,
             snapshot_recovery_config,
+            custom_genesis_state_path,
         });
         let mut layer = NodeStorageInitializerLayer::new();
         if matches!(kind, LayerKind::Precondition) {
