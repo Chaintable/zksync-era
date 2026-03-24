@@ -1,8 +1,23 @@
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 use zksync_db_connection::{connection::Connection, error::DalResult, instrument::InstrumentExt};
 use zksync_types::{AccountTreeId, StorageKey, StorageLog, H160, H256};
 
 use crate::Core;
+
+/// Helper struct for runtime sqlx::query_as (avoids compile-time query cache requirement).
+#[derive(FromRow)]
+struct SqlxStorageLogRow {
+    address: Vec<u8>,
+    key: Vec<u8>,
+    value: Vec<u8>,
+}
+
+#[derive(FromRow)]
+struct SqlxFactoryDepRow {
+    bytecode_hash: Vec<u8>,
+    bytecode: Vec<u8>,
+}
 
 #[derive(Debug)]
 pub struct CustomGenesisExportDal<'a, 'c> {
@@ -90,7 +105,7 @@ impl CustomGenesisExportDal<'_, '_> {
     /// Get storage logs from the genesis block only (miniblock_number = 0).
     /// Used to reproduce the original genesis state for EN sync from batch 0.
     pub async fn get_genesis_storage_logs(&mut self) -> DalResult<Vec<StorageLogRow>> {
-        let rows = sqlx::query!(
+        let rows: Vec<SqlxStorageLogRow> = sqlx::query_as(
             r#"
             SELECT DISTINCT ON (hashed_key)
                 address,
@@ -105,16 +120,14 @@ impl CustomGenesisExportDal<'_, '_> {
         .fetch_all(self.storage)
         .await?;
 
-        let storage_logs: Vec<StorageLogRow> = rows
+        Ok(rows
             .into_iter()
             .map(|row| StorageLogRow {
-                address: row.address.unwrap().try_into().unwrap(),
-                key: row.key.unwrap().try_into().unwrap(),
+                address: row.address.try_into().unwrap(),
+                key: row.key.try_into().unwrap(),
                 value: row.value.try_into().unwrap(),
             })
-            .collect();
-
-        Ok(storage_logs)
+            .collect())
     }
 
     /// Get all factory deps (for creating a new chain's genesis).
@@ -144,14 +157,14 @@ impl CustomGenesisExportDal<'_, '_> {
 
     /// Get factory deps deployed in the genesis block only (miniblock_number = 0).
     pub async fn get_genesis_factory_deps(&mut self) -> DalResult<Vec<FactoryDepRow>> {
-        let rows = sqlx::query!(
+        let rows: Vec<SqlxFactoryDepRow> = sqlx::query_as(
             r#"
             SELECT
-                bytecode_hash AS "bytecode_hash!",
-                bytecode AS "bytecode!"
+                bytecode_hash,
+                bytecode
             FROM factory_deps
             WHERE miniblock_number = 0
-            "#
+            "#,
         )
         .instrument("get_genesis_factory_deps")
         .fetch_all(self.storage)
