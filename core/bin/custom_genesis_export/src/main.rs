@@ -21,6 +21,11 @@ struct Args {
     /// Path to the genesis.yaml
     #[arg(short, long)]
     genesis_config_path: PathBuf,
+
+    /// Export only the original genesis block state (miniblock 0) instead of the latest state.
+    /// Use this when reproducing the original genesis for EN sync from batch 0.
+    #[arg(long, default_value_t = false)]
+    genesis_block_only: bool,
 }
 
 /// The `custom_genesis_export` tool allows exporting storage logs and factory dependencies
@@ -65,14 +70,29 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Connected to source database.");
 
-    let storage_logs = transaction
-        .custom_genesis_export_dal()
-        .get_storage_logs()
-        .await?;
-    let factory_deps = transaction
-        .custom_genesis_export_dal()
-        .get_factory_deps()
-        .await?;
+    let (storage_logs, factory_deps) = if args.genesis_block_only {
+        println!("Mode: genesis block only (miniblock 0)");
+        let logs = transaction
+            .custom_genesis_export_dal()
+            .get_genesis_storage_logs()
+            .await?;
+        let deps = transaction
+            .custom_genesis_export_dal()
+            .get_genesis_factory_deps()
+            .await?;
+        (logs, deps)
+    } else {
+        println!("Mode: latest state (all blocks)");
+        let logs = transaction
+            .custom_genesis_export_dal()
+            .get_storage_logs()
+            .await?;
+        let deps = transaction
+            .custom_genesis_export_dal()
+            .get_factory_deps()
+            .await?;
+        (logs, deps)
+    };
 
     transaction.commit().await?;
 

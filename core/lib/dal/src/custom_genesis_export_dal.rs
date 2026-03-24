@@ -29,9 +29,9 @@ pub struct FactoryDepRow {
 }
 
 impl CustomGenesisExportDal<'_, '_> {
+    /// Get storage logs for creating a NEW chain's genesis from current state.
+    /// Takes the latest value of each key across all blocks.
     pub async fn get_storage_logs(&mut self) -> DalResult<Vec<StorageLogRow>> {
-        // This method returns storage logs that are used for genesis export.
-        //
         // The where clause with addresses filters out SystemContext related records
         // 0x0 -- chainId,
         // 0x3 -- blockGasLimit,
@@ -48,7 +48,7 @@ impl CustomGenesisExportDal<'_, '_> {
                 FROM storage_logs
                 ORDER BY hashed_key, miniblock_number DESC, operation_number DESC
             )
-            
+
             SELECT
                 lsl.address,
                 lsl.key,
@@ -87,8 +87,38 @@ impl CustomGenesisExportDal<'_, '_> {
         Ok(storage_logs)
     }
 
+    /// Get storage logs from the genesis block only (miniblock_number = 0).
+    /// Used to reproduce the original genesis state for EN sync from batch 0.
+    pub async fn get_genesis_storage_logs(&mut self) -> DalResult<Vec<StorageLogRow>> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT DISTINCT ON (hashed_key)
+                address,
+                key,
+                value
+            FROM storage_logs
+            WHERE miniblock_number = 0
+            ORDER BY hashed_key, operation_number DESC
+            "#,
+        )
+        .instrument("get_genesis_storage_logs")
+        .fetch_all(self.storage)
+        .await?;
+
+        let storage_logs: Vec<StorageLogRow> = rows
+            .into_iter()
+            .map(|row| StorageLogRow {
+                address: row.address.unwrap().try_into().unwrap(),
+                key: row.key.unwrap().try_into().unwrap(),
+                value: row.value.try_into().unwrap(),
+            })
+            .collect();
+
+        Ok(storage_logs)
+    }
+
+    /// Get all factory deps (for creating a new chain's genesis).
     pub async fn get_factory_deps(&mut self) -> DalResult<Vec<FactoryDepRow>> {
-        // 1. Fetch the rows from the database
         let rows = sqlx::query!(
             r#"
             SELECT
@@ -101,7 +131,32 @@ impl CustomGenesisExportDal<'_, '_> {
         .fetch_all(self.storage)
         .await?;
 
-        // 2. Map the rows to FactoryDepRow structs
+        let factory_deps: Vec<FactoryDepRow> = rows
+            .into_iter()
+            .map(|row| FactoryDepRow {
+                bytecode_hash: row.bytecode_hash.try_into().unwrap(),
+                bytecode: row.bytecode,
+            })
+            .collect();
+
+        Ok(factory_deps)
+    }
+
+    /// Get factory deps deployed in the genesis block only (miniblock_number = 0).
+    pub async fn get_genesis_factory_deps(&mut self) -> DalResult<Vec<FactoryDepRow>> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                bytecode_hash AS "bytecode_hash!",
+                bytecode AS "bytecode!"
+            FROM factory_deps
+            WHERE miniblock_number = 0
+            "#
+        )
+        .instrument("get_genesis_factory_deps")
+        .fetch_all(self.storage)
+        .await?;
+
         let factory_deps: Vec<FactoryDepRow> = rows
             .into_iter()
             .map(|row| FactoryDepRow {
