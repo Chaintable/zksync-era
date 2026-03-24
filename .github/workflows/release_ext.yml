@@ -4,6 +4,10 @@ on:
   release:
     types:
       - created
+  pull_request:
+    branches:
+      - 'chain/chroze'
+  push:
   workflow_dispatch:
 
 env:
