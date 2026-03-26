@@ -9,6 +9,7 @@ pub use self::{
     da_client::{avail::AvailConfig, celestia::CelestiaConfig, eigen::EigenConfig, DAClientConfig},
     da_dispatcher::DADispatcherConfig,
     database::{DBConfig, PostgresConfig},
+    etcd::EtcdRegisterConfig,
     en::remote::RemoteENConfig,
     eth_sender::{EthConfig, GasAdjusterConfig},
     eth_watch::EthWatchConfig,
@@ -50,6 +51,7 @@ pub mod contracts;
 pub mod da_client;
 pub mod da_dispatcher;
 pub mod database;
+pub mod etcd;
 mod en;
 pub mod eth_proof_manager;
 pub mod eth_sender;

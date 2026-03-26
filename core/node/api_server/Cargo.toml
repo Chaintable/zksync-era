@@ -35,6 +35,8 @@ zksync_shared_resources.workspace = true
 vise.workspace = true
 
 anyhow.workspace = true
+alloy-rpc-types.workspace = true
+alloy-primitives.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 chrono.workspace = true

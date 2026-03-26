@@ -19,6 +19,7 @@ impl SolidityLikeEvent {
             address: self.address,
             indexed_topics: be_chunks_to_h256_words(self.topics),
             value: self.data,
+            position: 0,
         }
     }
 }

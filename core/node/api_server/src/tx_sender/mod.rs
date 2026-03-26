@@ -9,6 +9,12 @@ use std::{
     time::Duration,
 };
 
+pub(super) use self::{gas_estimation::BinarySearchKind, result::SubmitTxError};
+use self::{master_pool_sink::MasterPoolSink, result::ApiCallResult, tx_sink::TxSink};
+use crate::execution_sandbox::{
+    BlockArgs, SandboxAction, SandboxExecutionOutput, SandboxExecutor, SubmitTxStage,
+    VmConcurrencyBarrier, VmConcurrencyLimiter, SANDBOX_METRICS,
+};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use serde::Serialize;
@@ -45,15 +51,7 @@ use zksync_vm_executor::{
     oneshot::{CallOrExecute, EstimateGas, MultiVmBaseSystemContracts, OneshotEnvParameters},
 };
 
-use self::{
-    deny_list_pool_sink::DenyListPoolSink, master_pool_sink::MasterPoolSink, result::ApiCallResult,
-    tx_sink::TxSink,
-};
-pub(super) use self::{gas_estimation::BinarySearchKind, result::SubmitTxError};
-use crate::execution_sandbox::{
-    BlockArgs, SandboxAction, SandboxExecutionOutput, SandboxExecutor, SubmitTxStage,
-    VmConcurrencyBarrier, VmConcurrencyLimiter, SANDBOX_METRICS,
-};
+use self::deny_list_pool_sink::DenyListPoolSink;
 
 pub mod deny_list_pool_sink;
 mod gas_estimation;
@@ -788,7 +786,6 @@ impl TxSender {
             .await?;
         Ok(result)
     }
-
 
     pub async fn gas_price_and_gas_per_pubdata(&self) -> anyhow::Result<(u64, u64)> {
         let mut connection = self.acquire_replica_connection().await?;

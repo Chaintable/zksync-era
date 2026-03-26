@@ -18,6 +18,7 @@ impl EventAccumulator {
             address: h256_to_address(&H256(self.topics[0])),
             indexed_topics: self.topics[1..].iter().map(H256::from).collect(),
             value: self.data,
+            position: 0,
         }
     }
 }

@@ -80,6 +80,14 @@ impl From<LegacyCall> for Call {
             error: legacy_call.error,
             revert_reason: legacy_call.revert_reason,
             calls: legacy_call.calls.into_iter().map(Into::into).collect(),
+            call_start_timestamp: 0,
+            events: vec![],
+            parent_trace_id: None,
+            trace_id: String::from(""),
+            pos_in_parent_trace: 0,
+            self_storage_change: false,
+            storage_change: false,
+            parent_failed: false,
         }
     }
 }
@@ -99,6 +107,14 @@ impl From<LegacyMixedCall> for Call {
             error: legacy_call.error,
             revert_reason: legacy_call.revert_reason,
             calls: legacy_call.calls,
+            call_start_timestamp: 0,
+            events: vec![],
+            parent_trace_id: None,
+            trace_id: String::from(""),
+            pos_in_parent_trace: 0,
+            self_storage_change: false,
+            storage_change: false,
+            parent_failed: false,
         }
     }
 }

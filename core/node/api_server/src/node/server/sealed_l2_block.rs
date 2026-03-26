@@ -3,7 +3,7 @@ use std::time::Duration;
 use zksync_dal::{ConnectionPool, Core, CoreDal};
 use zksync_node_framework::{StopReceiver, Task, TaskId};
 
-use crate::web3::state::SealedL2BlockNumber;
+use crate::web3::{metrics::{CHAIN_HEAD_METRICS, PIPELINE_METRICS}, state::SealedL2BlockNumber};
 
 #[derive(Debug)]
 pub struct SealedL2BlockUpdaterTask {
@@ -26,8 +26,8 @@ impl Task for SealedL2BlockUpdaterTask {
 
         while !*stop_receiver.0.borrow_and_update() {
             let mut connection = self.pool.connection_tagged("api").await.unwrap();
-            let Some(last_sealed_l2_block) =
-                connection.blocks_dal().get_sealed_l2_block_number().await?
+            let Some((last_sealed_l2_block, l2_block_timestamp)) =
+                connection.blocks_dal().get_sealed_l2_block_number_and_timestamp().await?
             else {
                 tokio::time::sleep(UPDATE_INTERVAL).await;
                 continue;
@@ -35,6 +35,11 @@ impl Task for SealedL2BlockUpdaterTask {
             drop(connection);
 
             self.number_updater.update(last_sealed_l2_block);
+            PIPELINE_METRICS.block_num.set(last_sealed_l2_block.0.into());
+            CHAIN_HEAD_METRICS
+                .chain_head_block
+                .set(last_sealed_l2_block.0.into());
+            PIPELINE_METRICS.block_time.set(l2_block_timestamp as i64);
 
             if tokio::time::timeout(UPDATE_INTERVAL, stop_receiver.0.changed())
                 .await

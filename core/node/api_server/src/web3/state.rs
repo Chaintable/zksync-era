@@ -114,6 +114,7 @@ pub struct InternalApiConfigBase {
     /// Chain ID of the L1 network. Note, that it may be different from the chain id of the settlement layer.
     pub l1_chain_id: L1ChainId,
     pub l2_chain_id: L2ChainId,
+    pub etcd_register_version: String,
     pub max_tx_size: usize,
     pub estimate_gas_scale_factor: f64,
     pub estimate_gas_acceptable_overestimation: u32,
@@ -137,6 +138,7 @@ impl InternalApiConfigBase {
         Self {
             l1_chain_id: genesis.l1_chain_id,
             l2_chain_id: genesis.l2_chain_id,
+            etcd_register_version: String::new(),
             max_tx_size: web3_config.max_tx_size.0 as usize,
             estimate_gas_scale_factor: web3_config.estimate_gas_scale_factor,
             estimate_gas_acceptable_overestimation: web3_config
@@ -172,6 +174,7 @@ pub struct InternalApiConfig {
     /// Chain ID of the L1 network. Note, that it may be different from the chain id of the settlement layer.
     pub l1_chain_id: L1ChainId,
     pub l2_chain_id: L2ChainId,
+    pub etcd_register_version: String,
     pub max_tx_size: usize,
     pub estimate_gas_scale_factor: f64,
     pub estimate_gas_acceptable_overestimation: u32,
@@ -212,6 +215,7 @@ impl InternalApiConfig {
         Self {
             l1_chain_id: base.l1_chain_id,
             l2_chain_id: base.l2_chain_id,
+            etcd_register_version: base.etcd_register_version,
             max_tx_size: base.max_tx_size,
             estimate_gas_scale_factor: base.estimate_gas_scale_factor,
             estimate_gas_acceptable_overestimation: base.estimate_gas_acceptable_overestimation,

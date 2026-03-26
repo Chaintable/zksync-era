@@ -362,6 +362,15 @@ impl CommitmentGenerator {
             .get_l1_batch_pubdata_params(l1_batch_number)
             .await?
             .context("pubdata params are missing for L1 batch")?;
+
+        // For pre-gateway batches (l2_da_validator_address is zero), the pubdata_type
+        // in the DB may be inaccurate — it defaults to 'Rollup' even when the chain
+        // actually uses custom DA (Validium/NoDA). The Croze chain uses custom DA,
+        // so pre-gateway batches were committed with Validium mode on the main node.
+        if pubdata_params.l2_da_validator_address == zksync_types::Address::zero() {
+            return Ok(L1BatchCommitmentMode::Validium);
+        }
+
         Ok(pubdata_params.pubdata_type.into())
     }
 

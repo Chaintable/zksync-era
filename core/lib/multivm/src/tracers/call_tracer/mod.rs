@@ -21,6 +21,8 @@ pub struct CallTracer {
 
     result: Arc<OnceCell<Vec<Call>>>,
 
+    subcall_returned: bool,
+    topcall_returned: bool,
     max_stack_depth: usize,
     max_near_calls: usize,
 }
@@ -45,6 +47,8 @@ impl CallTracer {
             stack: vec![],
             finished_calls: vec![],
             result,
+            subcall_returned: false,
+            topcall_returned: false,
             max_stack_depth: 0,
             max_near_calls: 0,
         }

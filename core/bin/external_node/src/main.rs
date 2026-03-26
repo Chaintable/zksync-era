@@ -6,13 +6,16 @@ use node_builder::ExternalNodeBuilder;
 use smart_config::Prefixed;
 use zksync_config::{
     cli::ConfigArgs,
+    configs::EtcdRegisterConfig,
     sources::{ConfigFilePaths, ConfigSources},
 };
+use zksync_node_api_server::web3::set_pipeline_node_role;
 use zksync_types::L1BatchNumber;
 
 use crate::config::{generate_consensus_secrets, ExternalNodeConfig, LocalConfig};
 
 mod config;
+mod etcd_register;
 mod metadata;
 mod metrics;
 mod node_builder;
@@ -37,6 +40,14 @@ enum Command {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum RunMode {
+    /// Full external node mode: sync + re-execute blocks and persist state to Postgres.
+    Full,
+    /// RPC-only mode: connect to an existing Postgres instance and serve RPC without syncing / re-execution.
+    Rpc,
+}
+
 /// External node for ZKsync Era.
 #[derive(Debug, Parser)]
 #[command(author = "Matter Labs", version)]
@@ -48,6 +59,10 @@ struct Cli {
     /// do not use unless you know what you're doing.
     #[arg(long)]
     enable_consensus: bool,
+
+    /// Node running mode.
+    #[arg(long, value_enum, default_value_t = RunMode::Full, env = "EN_NODE_MODE")]
+    mode: RunMode,
 
     /// Comma-separated list of components to launch.
     #[arg(long, default_value = "all")]
@@ -70,6 +85,27 @@ struct Cli {
         requires = "enable_consensus"
     )]
     consensus_path: Option<std::path::PathBuf>,
+
+    // ========== Etcd Register CLI Options ==========
+    /// Enable etcd registration for service discovery.
+    #[arg(long, env = "EN_ETCD_REGISTER_ENABLED")]
+    etcd_register_enabled: Option<bool>,
+
+    /// Etcd endpoints (comma-separated list, e.g., "http://etcd1:2379,http://etcd2:2379").
+    #[arg(long, env = "EN_ETCD_REGISTER_ENDPOINTS", value_delimiter = ',')]
+    etcd_register_endpoints: Option<Vec<String>>,
+
+    /// Node meta in "ip:port" format (API server address for service discovery).
+    #[arg(long, env = "EN_ETCD_REGISTER_META")]
+    etcd_register_meta: Option<String>,
+
+    /// Keep-alive interval in milliseconds for etcd lease.
+    #[arg(long, env = "EN_ETCD_REGISTER_KEEP_ALIVE_INTERVAL_MS")]
+    etcd_register_keep_alive_interval_ms: Option<u64>,
+
+    /// Optional version segment for the etcd key path.
+    #[arg(long, env = "EN_ETCD_REGISTER_VERSION")]
+    etcd_register_version: Option<String>,
 }
 
 impl Cli {
@@ -94,6 +130,42 @@ impl Cli {
             config_sources.push(Prefixed::new(yaml, "consensus"));
         }
         Ok(config_sources)
+    }
+
+    /// Returns true if any etcd CLI arguments were provided.
+    fn has_etcd_cli_args(&self) -> bool {
+        self.etcd_register_enabled.is_some()
+            || self.etcd_register_endpoints.is_some()
+            || self.etcd_register_meta.is_some()
+            || self.etcd_register_keep_alive_interval_ms.is_some()
+            || self.etcd_register_version.is_some()
+    }
+
+    /// Applies etcd CLI arguments to the config, overriding values from env/file if provided.
+    fn apply_etcd_cli_args(&self, config: &mut ExternalNodeConfig) {
+        if !self.has_etcd_cli_args() {
+            return;
+        }
+
+        // Get or create the etcd config
+        let etcd_config = config.local.etcd_register.get_or_insert_with(EtcdRegisterConfig::default);
+
+        // Override with CLI args if provided
+        if let Some(enabled) = self.etcd_register_enabled {
+            etcd_config.enabled = enabled;
+        }
+        if let Some(ref endpoints) = self.etcd_register_endpoints {
+            etcd_config.endpoints = endpoints.clone();
+        }
+        if let Some(ref meta) = self.etcd_register_meta {
+            etcd_config.meta = meta.clone();
+        }
+        if let Some(keep_alive_interval_ms) = self.etcd_register_keep_alive_interval_ms {
+            etcd_config.keep_alive_interval_ms = keep_alive_interval_ms;
+        }
+        if let Some(ref version) = self.etcd_register_version {
+            etcd_config.version = version.clone();
+        }
     }
 }
 
@@ -158,7 +230,7 @@ fn main() -> anyhow::Result<()> {
     let runtime = tokio_runtime()?;
 
     // Initial setup.
-    let opt = Cli::parse();
+    let mut opt = Cli::parse();
     let schema = LocalConfig::schema().context("Internal error: cannot build config schema")?;
     let config_sources = opt.config_sources(Some("EN_"))?;
 
@@ -170,7 +242,7 @@ fn main() -> anyhow::Result<()> {
     let repo = config_sources.build_repository(&schema);
 
     let mut revert_to_l1_batch = None;
-    if let Some(cmd) = opt.command {
+    if let Some(cmd) = opt.command.take() {
         match cmd {
             Command::GenerateSecrets => {
                 generate_consensus_secrets();
@@ -186,16 +258,26 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    let config = ExternalNodeConfig::new(repo, opt.enable_consensus)?;
+    let mut config = ExternalNodeConfig::new(repo, opt.enable_consensus)?;
+
+    // Apply etcd CLI arguments (overrides env/file config if provided)
+    opt.apply_etcd_cli_args(&mut config);
 
     if let Some(l1_batch) = revert_to_l1_batch {
+        anyhow::ensure!(
+            opt.mode == RunMode::Full,
+            "Revert is only supported in full mode (sync + re-exec)"
+        );
         let node = ExternalNodeBuilder::on_runtime(runtime, config).build_for_revert(l1_batch)?;
         node.run(observability)?;
         return Ok(());
     }
 
     let node = ExternalNodeBuilder::on_runtime(runtime, config)
+        .with_mode(opt.mode)
         .build(opt.components.0.into_iter().collect())?;
+    let role = if opt.mode == RunMode::Rpc { "replica" } else { "writer" };
+    set_pipeline_node_role(role);
     node.run(observability)?;
     Ok(())
 }

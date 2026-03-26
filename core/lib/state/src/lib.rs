@@ -13,7 +13,7 @@ pub use zksync_vm_interface::storage as interface;
 
 pub use self::{
     cache::{lru_cache::LruCache, sequential_cache::SequentialCache},
-    catchup::{AsyncCatchupTask, RocksdbCell},
+    catchup::{AsyncCatchupTask, KeepUpdatedTask, RocksdbCell},
     postgres::{PostgresStorage, PostgresStorageCaches, PostgresStorageCachesTask},
     rocksdb::{
         RocksdbStorage, RocksdbStorageBuilder, RocksdbStorageOptions, StateKeeperColumnFamily,

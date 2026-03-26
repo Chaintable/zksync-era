@@ -103,15 +103,30 @@ impl Task for SyncStateUpdater {
         const UPDATE_INTERVAL: Duration = Duration::from_secs(10);
 
         while !*stop_receiver.0.borrow_and_update() {
-            let local_block = self
-                .connection_pool
-                .connection()
-                .await?
-                .blocks_dal()
-                .get_sealed_l2_block_number()
-                .await?;
+            let local_block = async {
+                self.connection_pool
+                    .connection()
+                    .await?
+                    .blocks_dal()
+                    .get_sealed_l2_block_number()
+                    .await
+            }
+            .await;
+            let local_block = match local_block {
+                Ok(block) => block,
+                Err(e) => {
+                    tracing::warn!("Failed to get local block number: {e:#}");
+                    continue;
+                }
+            };
 
-            let main_node_block = self.main_node_client.get_block_number().await?;
+            let main_node_block = match self.main_node_client.get_block_number().await {
+                Ok(block) => block,
+                Err(e) => {
+                    tracing::warn!("Failed to get main node block number: {e:#}");
+                    continue;
+                }
+            };
 
             if let Some(local_block) = local_block {
                 self.sync_state.set_local_block(local_block);

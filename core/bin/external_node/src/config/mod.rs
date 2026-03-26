@@ -5,6 +5,7 @@ use zksync_config::{
         api::{HealthCheckConfig, MerkleTreeApiConfig, Web3JsonRpcConfig},
         chain::{SharedStateKeeperConfig, TimestampAsserterConfig},
         consensus::ConsensusConfig,
+        etcd::EtcdRegisterConfig,
         networks::{NetworksConfig, SharedL1ContractsConfig},
         CommitmentGeneratorConfig, ConsistencyCheckerConfig, DataAvailabilitySecrets, L1Secrets,
         NodeSyncConfig, ObservabilityConfig, PrometheusConfig, PruningConfig, Secrets,
@@ -55,6 +56,8 @@ pub(crate) struct LocalConfig {
     pub secrets: Secrets,
     #[config(nest)]
     pub node_sync: NodeSyncConfig,
+    #[config(nest, rename = "etcd_register")]
+    pub etcd_register: Option<EtcdRegisterConfig>,
 }
 
 impl LocalConfig {
@@ -147,6 +150,7 @@ impl LocalConfig {
                 contract_verifier: ContractVerifierSecrets::default(),
             },
             node_sync: NodeSyncConfig::default(),
+            etcd_register: None,
         }
     }
 }
@@ -208,6 +212,11 @@ impl From<&LocalConfig> for InternalApiConfigBase {
         Self {
             l1_chain_id: config.networks.l1_chain_id,
             l2_chain_id: config.networks.l2_chain_id,
+            etcd_register_version: config
+                .etcd_register
+                .as_ref()
+                .map(|config| config.version.clone())
+                .unwrap_or_default(),
             max_tx_size: web3_rpc.max_tx_size.0 as usize,
             estimate_gas_scale_factor: web3_rpc.estimate_gas_scale_factor,
             estimate_gas_acceptable_overestimation: web3_rpc.estimate_gas_acceptable_overestimation,

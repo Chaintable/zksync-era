@@ -489,6 +489,73 @@ pub(super) struct MempoolCacheMetrics {
 #[vise::register]
 pub(super) static MEMPOOL_CACHE_METRICS: vise::Global<MempoolCacheMetrics> = vise::Global::new();
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelSet)]
+pub(crate) struct MethodNameLabel {
+    pub method_name: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+pub(crate) struct LeafageStatusLabels {
+    pub method_name: &'static str,
+    pub return_code: i32,
+}
+
+#[derive(Debug, Metrics)]
+#[metrics(prefix = "leafage_rpc_call")]
+pub(crate) struct LeafageRpcMetrics {
+    pub status: Family<LeafageStatusLabels, Counter>,
+    pub time_count: Family<MethodNameLabel, Counter>,
+    #[metrics(buckets = Buckets::LATENCIES)]
+    pub time: Family<MethodNameLabel, Histogram<Duration>>,
+}
+
+#[vise::register]
+pub(crate) static LEAFAGE_RPC_METRICS: vise::Global<LeafageRpcMetrics> = vise::Global::new();
+
+#[derive(Debug, Metrics)]
+#[metrics(prefix = "pipeline")]
+pub(crate) struct PipelineMetrics {
+    pub block_num: Gauge,
+    pub block_time: Gauge,
+}
+
+#[vise::register]
+pub(crate) static PIPELINE_METRICS: vise::Global<PipelineMetrics> = vise::Global::new();
+
+#[derive(Debug, Metrics)]
+pub(crate) struct ChainHeadMetrics {
+    pub chain_head_block: Gauge,
+}
+
+#[vise::register]
+pub(crate) static CHAIN_HEAD_METRICS: vise::Global<ChainHeadMetrics> = vise::Global::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelSet)]
+pub(crate) struct NodeRoleLabel {
+    pub role: &'static str,
+}
+
+#[derive(Debug, Metrics)]
+#[metrics(prefix = "pipeline")]
+pub(crate) struct PipelineNodeInfoMetrics {
+    pub node_info: Family<NodeRoleLabel, Gauge>,
+}
+
+#[vise::register]
+pub(crate) static PIPELINE_NODE_INFO_METRICS: vise::Global<PipelineNodeInfoMetrics> =
+    vise::Global::new();
+
+#[derive(Debug, Metrics)]
+#[metrics(prefix = "chain")]
+pub(crate) struct ChainInsertsMetrics {
+    #[metrics(unit = Unit::Seconds, buckets = Buckets::LATENCIES)]
+    pub inserts: Histogram<Duration>,
+}
+
+#[vise::register]
+pub(crate) static CHAIN_INSERTS_METRICS: vise::Global<ChainInsertsMetrics> =
+    vise::Global::new();
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue, EncodeLabelSet)]
 #[metrics(label = "stage", rename_all = "snake_case")]
 pub(super) enum TxReceiptStage {

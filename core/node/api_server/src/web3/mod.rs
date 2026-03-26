@@ -25,9 +25,9 @@ use zksync_web3_decl::{
         MethodCallback, Methods, RpcModule,
     },
     namespaces::{
-        DebugNamespaceServer, EnNamespaceServer, EthNamespaceServer, EthPubSubServer,
-        NetNamespaceServer, PreNamespaceServer, SnapshotsNamespaceServer, TraceNamespaceServer, UnstableNamespaceServer, Web3NamespaceServer,
-        ZksNamespaceServer,
+        DebankNamespaceServer, DebugNamespaceServer, EnNamespaceServer, EthNamespaceServer,
+        EthPubSubServer, NetNamespaceServer, PreNamespaceServer, SnapshotsNamespaceServer,
+        TraceNamespaceServer, UnstableNamespaceServer, Web3NamespaceServer, ZksNamespaceServer,
     },
     types::Filter,
 };
@@ -38,10 +38,10 @@ use self::{
         TrafficTracker,
     },
     mempool_cache::MempoolCache,
-    metrics::API_METRICS,
+    metrics::{ApiTransportLabel, NodeRoleLabel, API_METRICS, PIPELINE_NODE_INFO_METRICS},
     namespaces::{
-        DebugNamespace, EnNamespace, EthNamespace, NetNamespace, SnapshotsNamespace,
-        UnstableNamespace, Web3Namespace, ZksNamespace,
+        DebankNamespace, DebugNamespace, EnNamespace, EthNamespace, NetNamespace,
+        SnapshotsNamespace, UnstableNamespace, Web3Namespace, ZksNamespace,
     },
     pubsub::{EthSubscribe, EthSubscriptionIdProvider, PubSubEvent},
     receipts::AccountTypesCache,
@@ -50,8 +50,12 @@ use self::{
 use crate::{
     execution_sandbox::{BlockStartInfo, VmConcurrencyBarrier},
     tx_sender::TxSender,
-    web3::{backend_jsonrpsee::ServerTimeoutMiddleware, metrics::ApiTransportLabel},
+    web3::backend_jsonrpsee::ServerTimeoutMiddleware,
 };
+
+pub fn set_pipeline_node_role(role: &'static str) {
+    PIPELINE_NODE_INFO_METRICS.node_info[&NodeRoleLabel { role }].set(1);
+}
 
 pub mod backend_jsonrpsee;
 pub mod mempool_cache;
@@ -382,6 +386,10 @@ impl ApiServer {
         if namespaces.contains(&Namespace::Eth) {
             rpc.merge(EthNamespace::new(rpc_state.clone()).into_rpc())
                 .context("cannot merge eth namespace")?;
+            rpc.merge(DebankNamespaceServer::into_rpc(
+                DebankNamespace::new(rpc_state.clone()).await?,
+            ))
+                .context("cannot merge debank namespace")?;
         }
         if namespaces.contains(&Namespace::Net) {
             rpc.merge(NetNamespace::new(zksync_network_id).into_rpc())

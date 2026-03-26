@@ -48,12 +48,14 @@ smart-config-commands.workspace = true
 
 async-trait.workspace = true
 anyhow.workspace = true
+etcd-client.workspace = true
 tokio = { workspace = true, features = ["full"] }
 futures.workspace = true
 serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 smart-config.workspace = true
 url.workspace = true
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive", "env"] }
 tracing.workspace = true
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]

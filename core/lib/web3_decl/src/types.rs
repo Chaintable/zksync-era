@@ -8,9 +8,9 @@
 use core::convert::{TryFrom, TryInto};
 
 use rlp::Rlp;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 pub use zksync_types::{
-    api::{Block, BlockNumber, Log, TransactionReceipt, TransactionRequest},
+    api::{Block, BlockHashObject, BlockIdVariant, BlockNumber, Log, TransactionReceipt, TransactionRequest},
     ethabi,
     web3::{
         BlockHeader, Bytes, CallRequest, FeeHistory, Index, SyncState, TraceFilter, U64Number,
@@ -22,6 +22,73 @@ use zksync_types::{
     commitment::L1BatchCommitmentMode, protocol_version::ProtocolSemanticVersion, L1ChainId,
     L2ChainId,
 };
+
+/// Debank-style block context.
+///
+/// JSON shape (as required by certain third-party clients):
+/// `{ "block_id": "0x0", "type": "Equals" }`
+///
+/// `block_id` accepts:
+/// - A block tag string: `"latest"`, `"earliest"`, `"pending"`, etc.
+/// - A hex block number: `"0x1a2b"`
+/// - A block hash (66-char hex string): `"0xabcdef..."`
+/// - An object: `{ "block_hash": "0x..." }` or `{ "block_number": "0x..." }`
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DebankBlockContext {
+    #[serde(rename = "block_id", deserialize_with = "deserialize_debank_block_id")]
+    pub block_id: BlockIdVariant,
+    #[serde(rename = "type")]
+    pub r#type: DebankBlockContextType,
+}
+
+/// Custom deserializer for `block_id` that accepts a bare block hash string
+/// (66-char hex like `"0xabc..."`) in addition to the standard `BlockIdVariant` formats.
+fn deserialize_debank_block_id<'de, D>(deserializer: D) -> Result<BlockIdVariant, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de;
+
+    struct BlockIdVisitor;
+
+    impl<'de> de::Visitor<'de> for BlockIdVisitor {
+        type Value = BlockIdVariant;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a block tag, hex block number, block hash, or block identifier object")
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+            // H256 = 32 bytes = 64 hex chars; with "0x" prefix = 66 chars total.
+            if value.len() == 66 && value.starts_with("0x") {
+                if let Ok(hash) = value.parse::<H256>() {
+                    return Ok(BlockIdVariant::BlockHashObject(BlockHashObject {
+                        block_hash: hash,
+                    }));
+                }
+            }
+            let block_number =
+                BlockNumber::deserialize(de::value::BorrowedStrDeserializer::new(value))?;
+            Ok(BlockIdVariant::BlockNumber(block_number))
+        }
+
+        fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+        where
+            M: de::MapAccess<'de>,
+        {
+            // Backwards compatibility: { "block_hash": "0x..." } / { "block_number": "0x..." }
+            BlockIdVariant::deserialize(de::value::MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_any(BlockIdVisitor)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum DebankBlockContextType {
+    Equals,
+}
 
 /// Token in the ZKsync network
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

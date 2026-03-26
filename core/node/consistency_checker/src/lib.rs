@@ -269,8 +269,20 @@ impl LocalL1BatchCommitData {
         )
         .context("cannot detect DA source from reference commitment token")?;
 
+        // Custom DA is inherently a Validium concept. If the L1 commit data uses Custom DA
+        // but the DB metadata says Rollup, override to Validium. This can happen when the
+        // main node's miniblocks table has the default 'Rollup' pubdata_type for a chain
+        // that actually runs with custom DA (e.g. NoDA).
+        let effective_mode = if da == PubdataSendingMode::Custom
+            && self.commitment_mode == L1BatchCommitmentMode::Rollup
+        {
+            L1BatchCommitmentMode::Validium
+        } else {
+            self.commitment_mode
+        };
+
         let local_token =
-            CommitBatchInfo::new(self.commitment_mode, &self.l1_batch, da).into_token();
+            CommitBatchInfo::new(effective_mode, &self.l1_batch, da).into_token();
         anyhow::ensure!(
             local_token == *reference,
             "Locally reproduced commitment differs from the reference obtained from L1; \

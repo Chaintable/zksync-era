@@ -21,6 +21,8 @@ zksync_crypto_primitives.workspace = true
 
 async-trait.workspace = true
 anyhow.workspace = true
+md5 = { workspace = true }
+sha1 = { workspace = true }
 chrono = { workspace = true, default-features = false, features = ["now", "serde"] }
 derive_more = { workspace = true, features = ["debug", "display"] }
 once_cell.workspace = true

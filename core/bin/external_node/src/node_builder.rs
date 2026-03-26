@@ -57,13 +57,18 @@ use zksync_types::L1BatchNumber;
 use zksync_vlog::node::{PrometheusExporterLayer, SigintHandlerLayer, SigtermHandlerLayer};
 use zksync_web3_decl::node::{MainNodeClientLayer, QueryEthClientLayer};
 
-use crate::{config::ExternalNodeConfig, metrics::framework::ExternalNodeMetricsLayer, Component};
+use crate::{
+    config::ExternalNodeConfig, etcd_register::EtcdRegisterLayer,
+    metrics::framework::ExternalNodeMetricsLayer, Component, RunMode,
+};
+use zksync_state_keeper::node::StateKeeperRocksdbCacheLayer;
 
 /// Builder for the external node.
 #[derive(Debug)]
 pub(crate) struct ExternalNodeBuilder {
     pub(crate) node: ZkStackServiceBuilder,
     config: ExternalNodeConfig,
+    mode: RunMode,
 }
 
 impl ExternalNodeBuilder {
@@ -72,6 +77,7 @@ impl ExternalNodeBuilder {
         Ok(Self {
             node: ZkStackServiceBuilder::new().context("Cannot create ZkStackServiceBuilder")?,
             config,
+            mode: RunMode::Full,
         })
     }
 
@@ -79,7 +85,13 @@ impl ExternalNodeBuilder {
         Self {
             node: ZkStackServiceBuilder::on_runtime(runtime),
             config,
+            mode: RunMode::Full,
         }
+    }
+
+    pub fn with_mode(mut self, mode: RunMode) -> Self {
+        self.mode = mode;
+        self
     }
 
     fn add_sigint_handler_layer(mut self) -> anyhow::Result<Self> {
@@ -164,6 +176,23 @@ impl ExternalNodeBuilder {
         Ok(self)
     }
 
+    fn add_etcd_register_layer(mut self) -> anyhow::Result<Self> {
+        let etcd_cfg = self.config.local.etcd_register.clone();
+        let is_archive = !self.config.local.pruning.enabled;
+        let version = etcd_cfg
+            .as_ref()
+            .map(|cfg| cfg.version.clone())
+            .unwrap_or_default();
+        let chain_id = self.config.local.networks.l2_chain_id;
+        self.node.add_layer(EtcdRegisterLayer {
+            chain_id: chain_id.as_u64(),
+            version,
+            etcd_cfg,
+            is_archive,
+        });
+        Ok(self)
+    }
+
     fn add_query_eth_client_layer(mut self) -> anyhow::Result<Self> {
         let query_eth_client_layer = QueryEthClientLayer::new(
             self.config.local.networks.l1_chain_id,
@@ -187,6 +216,18 @@ impl ExternalNodeBuilder {
         const OPTIONAL_BYTECODE_COMPRESSION: bool = true;
 
         let queue_capacity = self.config.local.state_keeper.l2_block_seal_queue_capacity;
+
+        // We only need call traces on the external node if the `debug_` namespace is enabled
+        // or if Debank S3 persistence is enabled.
+        // TODO(PLA-1153): this is backwards / unobvious. Can readily use `config.state_keeper.save_call_traces` instead.
+        let debank_s3_enabled = std::env::var("DEBANK_S3_ENABLED")
+            .map_or(false, |v| v == "true" || v == "1");
+        let debank_kafka_brokers = Some(std::env::var("DEBANK_KAFKA_BROKERS").unwrap_or_else(|_| {
+            "b-2.chaintablenodexpi.udy5cj.c4.kafka.ap-northeast-1.amazonaws.com:9092".to_string()
+        }));
+        let debank_kafka_topic = std::env::var("DEBANK_KAFKA_TOPIC").ok();
+        let debank_version = std::env::var("DEBANK_VERSION").ok();
+
         let persistence_layer = OutputHandlerLayer::new(queue_capacity)
             .with_pre_insert_txs(true) // EN requires txs to be pre-inserted.
             .with_protective_reads_persistence_enabled(
@@ -194,22 +235,23 @@ impl ExternalNodeBuilder {
                     .local
                     .state_keeper
                     .protective_reads_persistence_enabled,
-            );
+            )
+            .with_debank_s3(debank_s3_enabled, self.config.local.networks.l2_chain_id.as_u64())
+            .with_debank_kafka(debank_kafka_brokers, debank_kafka_topic)
+            .with_debank_version(debank_version);
 
         let io_layer = ExternalIOLayer::new(
             self.config.local.networks.l2_chain_id,
             self.config.local.node_sync.validate_seal_criteria,
         );
-
-        // We only need call traces on the external node if the `debug_` namespace is enabled.
-        // TODO(PLA-1153): this is backwards / unobvious. Can readily use `config.state_keeper.save_call_traces` instead.
         let save_call_traces = self
             .config
             .local
             .api
             .web3_json_rpc
             .api_namespaces
-            .contains(&Namespace::Debug);
+            .contains(&Namespace::Debug)
+            || debank_s3_enabled;
         let main_node_batch_executor_builder_layer =
             MainBatchExecutorLayer::new(save_call_traces, OPTIONAL_BYTECODE_COMPRESSION);
 
@@ -227,6 +269,20 @@ impl ExternalNodeBuilder {
             .add_layer(persistence_layer)
             .add_layer(main_node_batch_executor_builder_layer)
             .add_layer(state_keeper_layer);
+        Ok(self)
+    }
+
+    fn add_state_keeper_rocksdb_cache_layer(mut self) -> anyhow::Result<Self> {
+        let db_config = &self.config.local.db.experimental;
+        let rocksdb_options = RocksdbStorageOptions {
+            block_cache_capacity: db_config.state_keeper_db_block_cache_capacity.0 as usize,
+            max_open_files: db_config.state_keeper_db_max_open_files,
+        };
+        let layer = StateKeeperRocksdbCacheLayer::new(
+            self.config.local.db.state_keeper_db_path.clone(),
+            rocksdb_options,
+        );
+        self.node.add_layer(layer);
         Ok(self)
     }
 
@@ -606,6 +662,26 @@ impl ExternalNodeBuilder {
     }
 
     pub fn build(mut self, mut components: Vec<Component>) -> anyhow::Result<ZkStackService> {
+        // In RPC mode we intentionally don't run syncing / re-execution tasks and limit the node to API components.
+        if self.mode == RunMode::Rpc {
+            let before = components.clone();
+            components.retain(|component| matches!(component, Component::HttpApi | Component::WsApi));
+            if components.is_empty() {
+                bail!("rpc mode requires at least one API component (http_api / ws_api / api)");
+            }
+            if before != components {
+                tracing::info!(
+                    "rpc mode: limiting launched components to API-only; requested={before:?}, effective={components:?}"
+                );
+            }
+        } else {
+            // Full EN mode requires Core to keep local state up-to-date.
+            anyhow::ensure!(
+                components.contains(&Component::Core),
+                "Core component is required in full mode"
+            );
+        }
+
         // Add "base" layers
         self = self
             .add_sigint_handler_layer()?
@@ -616,8 +692,18 @@ impl ExternalNodeBuilder {
             .add_main_node_client_layer()?
             .add_query_eth_client_layer()?
             .add_settlement_layer_data()?
-            .add_reorg_detector_layer()?
             .add_validate_chain_ids_layer()?;
+
+        // In rpc mode, we keep RocksDB cache updated from Postgres since there is no local re-execution.
+        if self.mode == RunMode::Rpc {
+            self = self.add_state_keeper_rocksdb_cache_layer()?;
+        }
+
+        // Reorg detector assumes the node state is initialized and consistent; in rpc mode we treat the DB
+        // as an externally-managed source of truth and do not attempt rollbacks.
+        if self.mode != RunMode::Rpc {
+            self = self.add_reorg_detector_layer()?;
+        }
 
         #[cfg(not(target_env = "msvc"))]
         {
@@ -625,7 +711,7 @@ impl ExternalNodeBuilder {
         }
 
         // Add layers that must run only on a single component.
-        if components.contains(&Component::Core) {
+        if self.mode != RunMode::Rpc && components.contains(&Component::Core) {
             // Core is a singleton & mandatory component,
             // so until we have a dedicated component for "auxiliary" tasks,
             // it's responsible for things like metrics.
@@ -640,7 +726,9 @@ impl ExternalNodeBuilder {
         }
 
         // Add preconditions for all the components.
-        self = self.add_storage_initialization_layer(LayerKind::Precondition)?;
+        if self.mode != RunMode::Rpc {
+            self = self.add_storage_initialization_layer(LayerKind::Precondition)?;
+        }
 
         // Sort the components, so that the components they may depend on each other are added in the correct order.
         components.sort_unstable_by_key(|component| match component {
@@ -660,7 +748,8 @@ impl ExternalNodeBuilder {
                         .add_tree_api_client_layer()?
                         .add_main_node_fee_params_fetcher_layer()?
                         .add_tx_sender_layer()?
-                        .add_http_web3_api_layer()?;
+                        .add_http_web3_api_layer()?
+                        .add_etcd_register_layer()?;
                 }
                 Component::WsApi => {
                     self = self
@@ -670,7 +759,8 @@ impl ExternalNodeBuilder {
                         .add_tree_api_client_layer()?
                         .add_main_node_fee_params_fetcher_layer()?
                         .add_tx_sender_layer()?
-                        .add_ws_web3_api_layer()?;
+                        .add_ws_web3_api_layer()?
+                        .add_etcd_register_layer()?;
                 }
                 Component::Tree => {
                     // Right now, distributed mode for EN is not fully supported, e.g. there are some

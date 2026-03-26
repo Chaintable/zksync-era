@@ -1,3 +1,7 @@
+use crate::{
+    client::{ForWeb3Network, L2},
+    types::H256,
+};
 #[cfg_attr(not(feature = "server"), allow(unused_imports))]
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
@@ -5,11 +9,6 @@ use zksync_types::{
     api::{BlockId, BlockNumber, CallTracerBlockResult, CallTracerResult, TracerConfig},
     transaction_request::CallRequest,
     web3::Bytes,
-};
-
-use crate::{
-    client::{ForWeb3Network, L2},
-    types::H256,
 };
 
 #[cfg_attr(

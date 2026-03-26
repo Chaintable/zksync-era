@@ -15,7 +15,7 @@ use zksync_types::{
     transaction_request::{CallRequest, CallResult, MultiCallErrorCode, MultiCallResp},
     u256_to_h256,
     web3::{self, Bytes, SyncInfo, SyncState},
-    AccountTreeId, L2BlockNumber, StorageKey, H160, H256, L2_BASE_TOKEN_ADDRESS, U256,
+    AccountTreeId, L2BlockNumber, L2ChainId, StorageKey, H160, H256, L2_BASE_TOKEN_ADDRESS, U256,
 };
 use zksync_web3_decl::{
     error::Web3Error,
@@ -46,6 +46,10 @@ pub(crate) struct EthNamespace {
 impl EthNamespace {
     pub fn new(state: RpcState) -> Self {
         Self { state }
+    }
+
+    pub(crate) fn etcd_register_version(&self) -> &str {
+        &self.state.api_config.etcd_register_version
     }
 
     pub(crate) fn current_method(&self) -> &MethodTracer {
@@ -180,7 +184,14 @@ impl EthNamespace {
                 use rustc_hex::ToHex;
                 let serialized: String = data.0.to_hex::<String>();
                 if serialized.starts_with("06") || serialized.starts_with("95") {
-                    let t = Token::String("zkCRO".to_string());
+                    let mut t = Token::String("ETH".to_string()); // era, zero, abstract
+                    if self.state.api_config.l2_chain_id == L2ChainId::from(50104) {
+                        // sophon chain
+                        t = Token::String("SOPH".to_string());
+                    } else if self.state.api_config.l2_chain_id == L2ChainId::from(388) {
+                        // cronos zkEVM chain
+                        t = Token::String("zkCRO".to_string());
+                    }
                     value = encode(&[t]);
                 } else if serialized.starts_with("31") {
                     let t = Token::Uint(Uint::from(18u32));

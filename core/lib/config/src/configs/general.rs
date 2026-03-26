@@ -100,6 +100,8 @@ pub struct GeneralConfig {
     pub consistency_checker_config: ConsistencyCheckerConfig,
     #[config(nest, rename = "tx_sink")]
     pub tx_sink_config: Option<TxSinkConfig>,
+    #[config(nest, rename = "etcd_register")]
+    pub etcd_register: Option<crate::configs::EtcdRegisterConfig>,
 }
 
 /// Returns the config schema for the main node.
