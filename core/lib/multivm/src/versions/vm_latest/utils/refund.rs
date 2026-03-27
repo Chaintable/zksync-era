@@ -29,8 +29,9 @@ pub(crate) fn compute_refund(
 
     if effective_gas_price == 0 {
         // When base fee is zero (e.g. gasless chains during free period),
-        // no payment was collected so no refund is needed.
-        return 0;
+        // trust the bootloader's refund calculation to avoid division by zero
+        // in ceil_div_u256 and to match the sequencer's commitment.
+        return bootloader_refund;
     }
 
     let bootloader_eth_price_per_pubdata_byte =
