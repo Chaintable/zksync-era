@@ -194,45 +194,53 @@ impl DebankS3OutputHandler {
         let mut global_log_index: u32 = 0;
 
         for (idx, tx_result) in block.executed_transactions.iter().enumerate() {
-            // Skip L1 and ProtocolUpgrade transactions
-            let l2_data = match &tx_result.transaction.common_data {
-                ExecuteTransactionCommon::L2(data) => data,
-                _ => continue,
-            };
-
             let tx_hash = tx_result.hash;
             let tx = &tx_result.transaction;
 
-            // Build DebankTransaction
-            let to_address = tx.execute.contract_address.or_else(|| {
-                Some(deployed_address_evm_create(
-                    l2_data.initiator_address,
-                    (*l2_data.nonce).into(),
-                ))
-            });
-
-            let gas_limit = l2_data.fee.gas_limit.as_u64();
-            let gas_used = gas_limit.saturating_sub(tx_result.refunded_gas);
-            let gas_price = l2_data
-                .fee
-                .get_effective_gas_price(base_fee.into())
-                .as_u64();
-
-            let (gas_fee_cap, gas_tip_cap) =
-                if l2_data.transaction_type as u32 >= TransactionType::EIP1559Transaction as u32 {
-                    (
-                        l2_data.fee.max_fee_per_gas.as_u64(),
-                        l2_data.fee.max_priority_fee_per_gas.as_u64(),
-                    )
-                } else {
-                    (0, 0)
+            // Extract common fields depending on transaction type.
+            let (from, to_address, gas_limit, gas_price, gas_fee_cap, gas_tip_cap, nonce) =
+                match &tx.common_data {
+                    ExecuteTransactionCommon::L2(data) => {
+                        let to = tx.execute.contract_address.or_else(|| {
+                            Some(deployed_address_evm_create(
+                                data.initiator_address,
+                                (*data.nonce).into(),
+                            ))
+                        });
+                        let gl = data.fee.gas_limit.as_u64();
+                        let gp = data.fee.get_effective_gas_price(base_fee.into()).as_u64();
+                        let (gfc, gtc) = if data.transaction_type as u32
+                            >= TransactionType::EIP1559Transaction as u32
+                        {
+                            (
+                                data.fee.max_fee_per_gas.as_u64(),
+                                data.fee.max_priority_fee_per_gas.as_u64(),
+                            )
+                        } else {
+                            (0, 0)
+                        };
+                        (data.initiator_address, to, gl, gp, gfc, gtc, (*data.nonce) as u64)
+                    }
+                    ExecuteTransactionCommon::L1(data) => {
+                        let to = tx.execute.contract_address;
+                        let gl = data.gas_limit.as_u64();
+                        let gp = data.max_fee_per_gas.as_u64();
+                        (data.sender, to, gl, gp, 0, 0, data.serial_id.0 as u64)
+                    }
+                    ExecuteTransactionCommon::ProtocolUpgrade(data) => {
+                        let to = tx.execute.contract_address;
+                        let gl = data.gas_limit.as_u64();
+                        let gp = data.max_fee_per_gas.as_u64();
+                        (data.sender, to, gl, gp, 0, 0, 0)
+                    }
                 };
 
+            let gas_used = gas_limit.saturating_sub(tx_result.refunded_gas);
             let status = tx_result.execution_status == TxExecutionStatus::Success;
 
             debank_transactions.push(DebankTransaction {
                 id: format!("{:#x}", tx_hash),
-                from: l2_data.initiator_address,
+                from,
                 to: to_address,
                 gas_limit,
                 gas_price,
@@ -241,7 +249,7 @@ impl DebankS3OutputHandler {
                 gas_fee_cap,
                 gas_tip_cap,
                 input: tx.execute.calldata.clone().into(),
-                nonce: (*l2_data.nonce) as u64,
+                nonce,
                 transaction_index: idx as u32,
                 value: tx.execute.value,
             });
