@@ -51,6 +51,8 @@ pub struct OutputHandlerLayer {
     debank_kafka_topic: Option<String>,
     /// Optional version segment for Debank S3 paths.
     debank_version: Option<String>,
+    /// When true, the Debank handler only uploads to S3 and skips all Kafka work.
+    debank_is_backup: bool,
 }
 
 #[derive(Debug, FromContext)]
@@ -78,6 +80,7 @@ impl OutputHandlerLayer {
             debank_kafka_brokers: None,
             debank_kafka_topic: None,
             debank_version: None,
+            debank_is_backup: false,
         }
     }
 
@@ -112,6 +115,11 @@ impl OutputHandlerLayer {
 
     pub fn with_debank_version(mut self, version: Option<String>) -> Self {
         self.debank_version = version;
+        self
+    }
+
+    pub fn with_debank_is_backup(mut self, is_backup: bool) -> Self {
+        self.debank_is_backup = is_backup;
         self
     }
 }
@@ -169,13 +177,15 @@ impl WiringLayer for OutputHandlerLayer {
                 self.debank_version.clone(),
                 self.debank_kafka_brokers.clone(),
                 self.debank_kafka_topic.clone(),
+                self.debank_is_backup,
             )
             .await;
             output_handler = output_handler.with_handler(Box::new(debank_handler));
             tracing::info!(
-                "Debank S3 output handler enabled for chain_id={}, version={:?}",
+                "Debank S3 output handler enabled for chain_id={}, version={:?}, is_backup={}",
                 self.chain_id,
                 self.debank_version,
+                self.debank_is_backup,
             );
         }
         let output_handler = OutputHandlerResource(Unique::new(output_handler));

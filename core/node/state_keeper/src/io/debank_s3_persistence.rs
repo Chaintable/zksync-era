@@ -46,6 +46,9 @@ pub struct DebankS3OutputHandler {
     /// Tracks the last block successfully notified to Kafka, used for
     /// continuity checking, gap filling, and duplicate/stale detection.
     last_block_context: Option<KafkaBlockContext>,
+    /// Backup mode: only upload to S3, skip all Kafka interactions
+    /// (no resume on startup, no notification, no gap fill).
+    is_backup: bool,
 }
 
 impl std::fmt::Debug for DebankS3OutputHandler {
@@ -72,6 +75,7 @@ impl DebankS3OutputHandler {
         version: Option<String>,
         kafka_brokers: Option<String>,
         kafka_topic: Option<String>,
+        is_backup: bool,
     ) -> Self {
         let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .load()
@@ -82,21 +86,28 @@ impl DebankS3OutputHandler {
         );
         let s3_client = S3Client::new(&aws_config);
 
-        let kafka_producer = kafka_brokers.as_ref().map(|brokers| {
-            let producer: FutureProducer = ClientConfig::new()
-                .set("bootstrap.servers", brokers)
-                .set("message.timeout.ms", "5000")
-                .set("enable.idempotence", "true")
-                .create()
-                .expect("Failed to create Kafka producer");
-            tracing::info!(
-                "DebankS3OutputHandler: Kafka producer created for brokers={}",
-                brokers
-            );
-            producer
-        });
+        let kafka_producer = if is_backup {
+            tracing::info!("DebankS3OutputHandler: backup mode — skipping Kafka producer");
+            None
+        } else {
+            kafka_brokers.as_ref().map(|brokers| {
+                let producer: FutureProducer = ClientConfig::new()
+                    .set("bootstrap.servers", brokers)
+                    .set("message.timeout.ms", "5000")
+                    .set("enable.idempotence", "true")
+                    .create()
+                    .expect("Failed to create Kafka producer");
+                tracing::info!(
+                    "DebankS3OutputHandler: Kafka producer created for brokers={}",
+                    brokers
+                );
+                producer
+            })
+        };
 
-        let last_block_context =
+        let last_block_context = if is_backup {
+            None
+        } else {
             match (kafka_brokers.as_deref(), kafka_topic.as_deref()) {
                 (Some(brokers), Some(topic)) => {
                     match resume_from_kafka(brokers, topic).await {
@@ -117,7 +128,8 @@ impl DebankS3OutputHandler {
                     }
                 }
                 _ => None,
-            };
+            }
+        };
 
         Self {
             s3_client,
@@ -127,6 +139,7 @@ impl DebankS3OutputHandler {
             kafka_topic,
             pending_upload: None,
             last_block_context,
+            is_backup,
         }
     }
 
@@ -169,6 +182,7 @@ impl DebankS3OutputHandler {
         let kafka_producer = self.kafka_producer.clone();
         let kafka_topic = self.kafka_topic.clone();
         let last_ctx = self.last_block_context.clone();
+        let is_backup = self.is_backup;
         self.pending_upload = Some(tokio::spawn(async move {
             const MAX_RETRIES: u32 = 5;
             const INITIAL_BACKOFF: Duration = Duration::from_secs(2);
@@ -209,6 +223,10 @@ impl DebankS3OutputHandler {
                 output.block_file.traces.len(),
                 output.block_file.events.len(),
             );
+
+            if is_backup {
+                return None;
+            }
 
             let (producer, topic) = match (kafka_producer, kafka_topic) {
                 (Some(p), Some(t)) => (p, t),

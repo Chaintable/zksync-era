@@ -227,6 +227,8 @@ impl ExternalNodeBuilder {
         }));
         let debank_kafka_topic = std::env::var("DEBANK_KAFKA_TOPIC").ok();
         let debank_version = std::env::var("DEBANK_VERSION").ok();
+        let debank_is_backup = std::env::var("DEBANK_IS_BACKUP")
+            .map_or(false, |v| v == "true" || v == "1");
 
         let persistence_layer = OutputHandlerLayer::new(queue_capacity)
             .with_pre_insert_txs(true) // EN requires txs to be pre-inserted.
@@ -238,7 +240,8 @@ impl ExternalNodeBuilder {
             )
             .with_debank_s3(debank_s3_enabled, self.config.local.networks.l2_chain_id.as_u64())
             .with_debank_kafka(debank_kafka_brokers, debank_kafka_topic)
-            .with_debank_version(debank_version);
+            .with_debank_version(debank_version)
+            .with_debank_is_backup(debank_is_backup);
 
         let io_layer = ExternalIOLayer::new(
             self.config.local.networks.l2_chain_id,
