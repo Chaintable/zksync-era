@@ -1,13 +1,16 @@
 use std::collections::HashSet;
+use std::io::Read as IoRead;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use aws_sdk_s3::Client as S3Client;
+use flate2::read::GzDecoder;
 use flate2::{write::GzEncoder, Compression};
+use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
-use rdkafka::ClientConfig;
+use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
 use tokio::task::JoinHandle;
 use zksync_multivm::{interface::TxExecutionStatus, tracers::debank};
 use zksync_types::{
@@ -39,7 +42,13 @@ pub struct DebankS3OutputHandler {
     kafka_topic: Option<String>,
     /// Handle to the previous block's upload task. Awaited before spawning the
     /// next upload so that S3 writes and Kafka notifications are strictly ordered.
-    pending_upload: Option<JoinHandle<()>>,
+    pending_upload: Option<JoinHandle<Option<KafkaBlockContext>>>,
+    /// Tracks the last block successfully notified to Kafka, used for
+    /// continuity checking, gap filling, and duplicate/stale detection.
+    last_block_context: Option<KafkaBlockContext>,
+    /// Backup mode: only upload to S3, skip all Kafka interactions
+    /// (no resume on startup, no notification, no gap fill).
+    is_backup: bool,
 }
 
 impl std::fmt::Debug for DebankS3OutputHandler {
@@ -49,6 +58,13 @@ impl std::fmt::Debug for DebankS3OutputHandler {
             .field("version", &self.version)
             .field("kafka_topic", &self.kafka_topic)
             .field("kafka_producer", &self.kafka_producer.as_ref().map(|_| "..."))
+            .field(
+                "last_block_context",
+                &self
+                    .last_block_context
+                    .as_ref()
+                    .map(|c| c.block_number),
+            )
             .finish()
     }
 }
@@ -59,6 +75,7 @@ impl DebankS3OutputHandler {
         version: Option<String>,
         kafka_brokers: Option<String>,
         kafka_topic: Option<String>,
+        is_backup: bool,
     ) -> Self {
         let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .load()
@@ -69,19 +86,50 @@ impl DebankS3OutputHandler {
         );
         let s3_client = S3Client::new(&aws_config);
 
-        let kafka_producer = kafka_brokers.as_ref().map(|brokers| {
-            let producer: FutureProducer = ClientConfig::new()
-                .set("bootstrap.servers", brokers)
-                .set("message.timeout.ms", "5000")
-                .set("enable.idempotence", "true")
-                .create()
-                .expect("Failed to create Kafka producer");
-            tracing::info!(
-                "DebankS3OutputHandler: Kafka producer created for brokers={}",
-                brokers
-            );
-            producer
-        });
+        let kafka_producer = if is_backup {
+            tracing::info!("DebankS3OutputHandler: backup mode — skipping Kafka producer");
+            None
+        } else {
+            kafka_brokers.as_ref().map(|brokers| {
+                let producer: FutureProducer = ClientConfig::new()
+                    .set("bootstrap.servers", brokers)
+                    .set("message.timeout.ms", "5000")
+                    .set("enable.idempotence", "true")
+                    .create()
+                    .expect("Failed to create Kafka producer");
+                tracing::info!(
+                    "DebankS3OutputHandler: Kafka producer created for brokers={}",
+                    brokers
+                );
+                producer
+            })
+        };
+
+        let last_block_context = if is_backup {
+            None
+        } else {
+            match (kafka_brokers.as_deref(), kafka_topic.as_deref()) {
+                (Some(brokers), Some(topic)) => {
+                    match resume_from_kafka(brokers, topic).await {
+                        Ok(ctx) => {
+                            tracing::info!(
+                                "DebankS3OutputHandler: resumed from Kafka, last block = {:?}",
+                                ctx.as_ref().map(|c| c.block_number),
+                            );
+                            ctx
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "DebankS3OutputHandler: failed to resume from Kafka: {:#}",
+                                e
+                            );
+                            None
+                        }
+                    }
+                }
+                _ => None,
+            }
+        };
 
         Self {
             s3_client,
@@ -90,14 +138,25 @@ impl DebankS3OutputHandler {
             kafka_producer,
             kafka_topic,
             pending_upload: None,
+            last_block_context,
+            is_backup,
         }
     }
 
-    /// Wait for the previous block's upload to complete so notifications stay ordered.
+    /// Wait for the previous block's upload to complete and update
+    /// `last_block_context` if the Kafka notification succeeded.
     async fn wait_for_pending_upload(&mut self) {
         if let Some(handle) = self.pending_upload.take() {
-            if let Err(e) = handle.await {
-                tracing::error!("Previous debank upload task panicked: {:#}", e);
+            match handle.await {
+                Ok(Some(ctx)) => {
+                    self.last_block_context = Some(ctx);
+                }
+                Ok(None) => {
+                    // S3 or Kafka failed, or block was skipped — keep existing last_block_context
+                }
+                Err(e) => {
+                    tracing::error!("Previous debank upload task panicked: {:#}", e);
+                }
             }
         }
     }
@@ -122,6 +181,8 @@ impl DebankS3OutputHandler {
         let version = self.version.clone();
         let kafka_producer = self.kafka_producer.clone();
         let kafka_topic = self.kafka_topic.clone();
+        let last_ctx = self.last_block_context.clone();
+        let is_backup = self.is_backup;
         self.pending_upload = Some(tokio::spawn(async move {
             const MAX_RETRIES: u32 = 5;
             const INITIAL_BACKOFF: Duration = Duration::from_secs(2);
@@ -153,7 +214,7 @@ impl DebankS3OutputHandler {
                     block_number,
                     MAX_RETRIES,
                 );
-                return;
+                return None;
             }
             tracing::info!(
                 "Uploaded debank data for block {} to S3 ({} txs, {} traces, {} events)",
@@ -163,15 +224,73 @@ impl DebankS3OutputHandler {
                 output.block_file.events.len(),
             );
 
-            if let (Some(producer), Some(topic)) = (kafka_producer, kafka_topic) {
-                if let Err(e) =
-                    send_kafka_notification(&producer, &topic, block_context, block_number).await
-                {
+            if is_backup {
+                return None;
+            }
+
+            let (producer, topic) = match (kafka_producer, kafka_topic) {
+                (Some(p), Some(t)) => (p, t),
+                _ => return None,
+            };
+
+            // Skip if behind or duplicate
+            if let Some(ref last) = last_ctx {
+                if block_context.block_number <= last.block_number {
+                    tracing::info!(
+                        "Skipping Kafka notification for block {} (Kafka already at {})",
+                        block_context.block_number,
+                        last.block_number,
+                    );
+                    return None;
+                }
+
+                // Fill gap if needed
+                if block_context.block_number > last.block_number + 1 {
+                    tracing::warn!(
+                        "Kafka gap detected: last={}, current={}. Filling from S3...",
+                        last.block_number,
+                        block_context.block_number,
+                    );
+                    if let Err(e) = fill_kafka_gap(
+                        &s3,
+                        &producer,
+                        &topic,
+                        chain_id,
+                        version.as_deref(),
+                        last.block_number,
+                        &block_context,
+                    )
+                    .await
+                    {
+                        tracing::error!(
+                            "Failed to fill Kafka gap (blocks {}..{}): {:#}. \
+                             Skipping current block to preserve continuity.",
+                            last.block_number + 1,
+                            block_context.block_number - 1,
+                            e,
+                        );
+                        return None;
+                    }
+                }
+            }
+
+            // Send Kafka notification for current block
+            match send_kafka_notification(
+                &producer,
+                &topic,
+                block_context.clone(),
+                block_number,
+            )
+            .await
+            {
+                Ok(()) => Some(block_context),
+                Err(e) => {
                     tracing::error!(
                         "Failed to send Kafka notification for block {}: {:#}",
                         block_number,
                         e
                     );
+                    None
                 }
             }
         }));
@@ -497,4 +616,131 @@ async fn send_kafka_notification(
         topic
     );
     Ok(())
+}
+
+/// Read the last Kafka message to recover `last_block_context` on startup.
+async fn resume_from_kafka(
+    brokers: &str,
+    topic: &str,
+) -> anyhow::Result<Option<KafkaBlockContext>> {
+    let consumer: StreamConsumer = ClientConfig::new()
+        .set("bootstrap.servers", brokers)
+        .set("enable.partition.eof", "true")
+        .set("session.timeout.ms", "6000")
+        .set("group.id", "debank_s3_resume_group")
+        .create()?;
+
+    let partition = 0;
+    let (low, high) =
+        consumer.fetch_watermarks(topic, partition, Duration::from_secs(5))?;
+    tracing::info!(
+        "resume_from_kafka: watermarks for partition {}: low={}, high={}",
+        partition,
+        low,
+        high,
+    );
+
+    if high <= low {
+        return Ok(None);
+    }
+
+    // Seek to the last message
+    let mut tpl = TopicPartitionList::new();
+    tpl.add_partition_offset(topic, partition, Offset::Offset(high - 1))?;
+    consumer.assign(&tpl)?;
+
+    match consumer.recv().await {
+        Ok(msg) => {
+            let payload = msg
+                .payload()
+                .ok_or_else(|| anyhow::anyhow!("empty Kafka payload"))?;
+            let decoded = decompress_gzip(payload)?;
+            let notification: KafkaBlockChangeNotification =
+                serde_json::from_slice(&decoded)?;
+            Ok(notification.new_blocks.last().cloned())
+        }
+        Err(rdkafka::error::KafkaError::PartitionEOF(_)) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Fill missing Kafka notifications by reading block headers from S3.
+/// Walks backwards from `current_block.parent_hash` to collect headers
+/// for blocks `(last_block_number+1)..current_block.block_number`, then
+/// sends notifications in ascending order.
+async fn fill_kafka_gap(
+    s3: &S3Client,
+    producer: &FutureProducer,
+    topic: &str,
+    chain_id: u64,
+    version: Option<&str>,
+    last_block_number: u64,
+    current_block: &KafkaBlockContext,
+) -> anyhow::Result<()> {
+    let gap_size = (current_block.block_number - last_block_number - 1) as usize;
+    if gap_size == 0 {
+        return Ok(());
+    }
+
+    let mut missing = Vec::with_capacity(gap_size);
+    let mut hash = current_block.parent_hash;
+
+    for _ in 0..gap_size {
+        let header = read_header_from_s3(s3, chain_id, version, hash).await?;
+        missing.push(KafkaBlockContext {
+            hash: header.hash,
+            parent_hash: header.parent_hash,
+            block_number: header.number,
+            timestamp: header.timestamp,
+        });
+        hash = header.parent_hash;
+    }
+
+    missing.reverse();
+
+    for ctx in &missing {
+        send_kafka_notification(producer, topic, ctx.clone(), ctx.block_number).await?;
+        tracing::info!(
+            "Filled Kafka gap: sent notification for block {}",
+            ctx.block_number,
+        );
+    }
+
+    Ok(())
+}
+
+/// Read a block header from the HEADER_BUCKET in S3.
+async fn read_header_from_s3(
+    s3: &S3Client,
+    chain_id: u64,
+    version: Option<&str>,
+    block_hash: H256,
+) -> anyhow::Result<Header> {
+    let prefix = match version {
+        Some(v) => format!("{}/{}", chain_id, v),
+        None => chain_id.to_string(),
+    };
+    let block_hash = format!("{:#x}", block_hash);
+    let key = format!("{}/{}/block", prefix, block_hash);
+
+    let resp = s3
+        .get_object()
+        .bucket(HEADER_BUCKET)
+        .key(&key)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get header from S3 key={}: {:?}", key, e))?;
+
+    let body = resp.body.collect().await?.into_bytes();
+    let decoded = decompress_gzip(&body)?;
+    let header: Header = serde_json::from_slice(&decoded)?;
+    Ok(header)
+}
+
+/// Decompress gzip-encoded bytes.
+fn decompress_gzip(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut decoder = GzDecoder::new(data);
+    let mut decoded = Vec::new();
+    decoder.read_to_end(&mut decoded)?;
+    Ok(decoded)
 }
