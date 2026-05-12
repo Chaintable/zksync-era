@@ -71,7 +71,7 @@ pub fn add_trace_log(
         }
     }
     for (i, subcall) in cf.calls.iter().enumerate() {
-        if subcall.revert_reason.is_some() {
+        if subcall.revert_reason.is_some() || subcall.parent_failed {
             outerrtraces.push(to_debank_trace(
                 &subcall,
                 tx_hash,
