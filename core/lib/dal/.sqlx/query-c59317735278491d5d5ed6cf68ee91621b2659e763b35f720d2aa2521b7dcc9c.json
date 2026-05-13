@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH bytecode_counts AS (\n                SELECT\n                    value AS bytecode_hash,\n                    COUNT(*) AS cnt\n                FROM\n                    storage_logs\n                WHERE\n                    miniblock_number = 0\n                    AND address = '\\x0000000000000000000000000000000000008002'::bytea\n                GROUP BY\n                    value\n                HAVING\n                    COUNT(*) <= $1\n            )\n            SELECT\n                substring(sl.key, 13, 20) AS \"contract_addr!\",\n                fd.bytecode AS \"bytecode!\"\n            FROM\n                storage_logs sl\n            JOIN bytecode_counts bc ON sl.value = bc.bytecode_hash\n            JOIN factory_deps fd ON fd.bytecode_hash = sl.value\n            WHERE\n                sl.miniblock_number = 0\n                AND sl.address = '\\x0000000000000000000000000000000000008002'::bytea\n            ORDER BY\n                sl.operation_number\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "contract_addr!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "bytecode!",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c59317735278491d5d5ed6cf68ee91621b2659e763b35f720d2aa2521b7dcc9c"
+}

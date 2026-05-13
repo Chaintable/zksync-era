@@ -22,6 +22,67 @@ pub struct StorageLogsDal<'a, 'c> {
 }
 
 impl StorageLogsDal<'_, '_> {
+    /// Returns genesis (block 0) application contracts: each `(address, bytecode)`
+    /// pair where the contract's bytecode is used by **at most `skip_threshold`**
+    /// other contracts in genesis.
+    ///
+    /// Source: `storage_logs WHERE miniblock_number=0 AND address=AccountCodeStorage(0x8002)`
+    /// gives `(deployed_addr, bytecode_hash)` pairs for every contract deployed
+    /// at genesis. Joining `factory_deps` resolves bytecode.
+    ///
+    /// `skip_threshold` filters out "mass-deployed wrappers" (e.g. Lens has 645k
+    /// user-related wrapper contracts sharing 2 bytecodes — those are not
+    /// application contracts and would inflate the genesis BlockFile to ~15GB).
+    /// `skip_threshold=1000` retains only application-tier contracts (~439 for
+    /// Lens: 39 ZKSync system contracts + ~400 Lens-specific app contracts).
+    ///
+    /// Returned in deployment order (`storage_logs.operation_number`).
+    pub async fn get_genesis_application_contracts(
+        &mut self,
+        skip_threshold: i64,
+    ) -> DalResult<Vec<(Address, Vec<u8>)>> {
+        let rows = sqlx::query!(
+            r#"
+            WITH bytecode_counts AS (
+                SELECT
+                    value AS bytecode_hash,
+                    COUNT(*) AS cnt
+                FROM
+                    storage_logs
+                WHERE
+                    miniblock_number = 0
+                    AND address = '\x0000000000000000000000000000000000008002'::bytea
+                GROUP BY
+                    value
+                HAVING
+                    COUNT(*) <= $1
+            )
+            SELECT
+                substring(sl.key, 13, 20) AS "contract_addr!",
+                fd.bytecode AS "bytecode!"
+            FROM
+                storage_logs sl
+            JOIN bytecode_counts bc ON sl.value = bc.bytecode_hash
+            JOIN factory_deps fd ON fd.bytecode_hash = sl.value
+            WHERE
+                sl.miniblock_number = 0
+                AND sl.address = '\x0000000000000000000000000000000000008002'::bytea
+            ORDER BY
+                sl.operation_number
+            "#,
+            skip_threshold,
+        )
+        .instrument("get_genesis_application_contracts")
+        .with_arg("skip_threshold", &skip_threshold)
+        .fetch_all(self.storage)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| (Address::from_slice(&r.contract_addr), r.bytecode))
+            .collect())
+    }
+
     /// Inserts storage logs grouped by transaction for an L2 block. The ordering of transactions
     /// must be the same as their ordering in the L2 block.
     pub async fn insert_storage_logs(

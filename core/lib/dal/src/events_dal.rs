@@ -195,6 +195,53 @@ impl EventsDal<'_, '_> {
         Ok(())
     }
 
+    /// Returns all logs from `events` table for the given L2 block, ordered by
+    /// `event_index_in_block`. Used by `debank_blockfile_backfill` PgSource to
+    /// populate BlockFile events for Lens v25 blocks (where `call_traces.events`
+    /// was empty because the DeBank `events` field didn't exist on `Call` yet).
+    ///
+    /// trace-association fields (`parent_trace_id` / `pos_in_parent_trace`) are
+    /// **not** in the `events` table and must be defaulted by the caller — this
+    /// is the same degradation set as RPC-mode backfill.
+    pub async fn get_logs_for_l2_block(
+        &mut self,
+        block: L2BlockNumber,
+    ) -> DalResult<Vec<api::Log>> {
+        let logs: Vec<_> = sqlx::query_as!(
+            StorageWeb3Log,
+            r#"
+            SELECT
+                address,
+                topic1,
+                topic2,
+                topic3,
+                topic4,
+                value,
+                NULL::bytea AS "block_hash",
+                NULL::bigint AS "l1_batch_number?",
+                miniblock_number,
+                tx_hash,
+                tx_index_in_block,
+                event_index_in_block,
+                event_index_in_tx,
+                NULL::bigint AS "block_timestamp?"
+            FROM
+                events
+            WHERE
+                miniblock_number = $1
+            ORDER BY
+                event_index_in_block ASC
+            "#,
+            i64::from(block.0),
+        )
+        .instrument("get_logs_for_l2_block")
+        .with_arg("block", &block)
+        .fetch_all(self.storage)
+        .await?;
+
+        Ok(logs.into_iter().map(api::Log::from).collect())
+    }
+
     pub(crate) async fn get_logs_by_tx_hashes(
         &mut self,
         hashes: &[H256],

@@ -27,6 +27,16 @@ enum TransactionSelector<'a> {
     Position(L2BlockNumber, u32),
 }
 
+/// Server-side `Transaction` plus per-tx execution status fields. Returned by
+/// [`TransactionsWeb3Dal::get_raw_l2_block_transactions_with_status`] for callers
+/// that need `refunded_gas` / `error` without an extra per-tx query.
+#[derive(Debug, Clone)]
+pub struct TransactionWithStatus {
+    pub tx: Transaction,
+    pub refunded_gas: u64,
+    pub error: Option<String>,
+}
+
 /// Transaction receipt together with additional data used by the API server logic.
 #[derive(Debug)]
 pub struct ExtendedTransactionReceipt {
@@ -483,6 +493,51 @@ impl TransactionsWeb3Dal<'_, '_> {
             .await?
             .remove(&block)
             .unwrap_or_default())
+    }
+
+    /// Like [`Self::get_raw_l2_block_transactions`] but additionally returns
+    /// `refunded_gas` and `error` from the `transactions` table. Used by the
+    /// backfill tool to avoid a separate per-tx receipt query when building
+    /// `DebankTransaction` from PG.
+    ///
+    /// Transactions are returned in `index_in_block` order.
+    pub async fn get_raw_l2_block_transactions_with_status(
+        &mut self,
+        block: L2BlockNumber,
+    ) -> DalResult<Vec<TransactionWithStatus>> {
+        let rows = sqlx::query_as!(
+            StorageTransaction,
+            r#"
+            SELECT
+                transactions.*
+            FROM
+                transactions
+            INNER JOIN miniblocks ON miniblocks.number = transactions.miniblock_number
+            WHERE
+                miniblocks.number = $1
+            ORDER BY
+                index_in_block
+            "#,
+            i64::from(block.0),
+        )
+        .instrument("get_raw_l2_block_transactions_with_status")
+        .with_arg("block", &block)
+        .fetch_all(self.storage)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let refunded_gas = row.refunded_gas as u64;
+                let error = row.error.clone();
+                let tx = Transaction::from(row);
+                TransactionWithStatus {
+                    tx,
+                    refunded_gas,
+                    error,
+                }
+            })
+            .collect())
     }
 
     /// Returns EIP-2718 binary-encoded representation of a transaction. As L1 priority transactions

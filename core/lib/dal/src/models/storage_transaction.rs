@@ -18,7 +18,7 @@ use zksync_types::{
 };
 use zksync_vm_interface::Call;
 
-use super::call::{LegacyCall, LegacyMixedCall};
+use super::call::{LegacyCall, LegacyCall25, LegacyMixedCall};
 use crate::{
     models::bigdecimal_to_u256, transactions_web3_dal::ExtendedTransactionReceipt, BigDecimal,
 };
@@ -631,7 +631,16 @@ pub(crate) fn parse_call_trace(call_trace: &[u8], protocol_version: ProtocolVers
             legacy_mixed_call_trace.into()
         }
     } else {
-        bincode::deserialize(call_trace).unwrap()
+        // Try current `Call` (with DeBank fields). On Lens v25 blocks
+        // (protocol_version=25, ≥ 1.5.0 but written before DeBank fields were
+        // appended to Call in commit f650e15cb), this errors with UnexpectedEof.
+        // Fall back to LegacyCall25 (current layout minus DeBank fields).
+        match bincode::deserialize::<Call>(call_trace) {
+            Ok(call) => call,
+            Err(_) => bincode::deserialize::<LegacyCall25>(call_trace)
+                .expect("Failed to deserialize call trace (tried Call and LegacyCall25)")
+                .into(),
+        }
     }
 }
 

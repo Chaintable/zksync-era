@@ -35,6 +35,36 @@ pub(super) struct LegacyCall {
     pub calls: Vec<LegacyCall>,
 }
 
+/// Lens chain v25-era Call struct. Same layout as the current `Call` but without
+/// the DeBank-specific fields that were appended in commit `f650e15cb`
+/// (`feat: apply DeBankDeFi customizations to chain/croze`). Subcalls recurse
+/// with the same struct.
+///
+/// Lens blocks 0..=207145 (protocol_version=25) were written before those
+/// DeBank fields existed. Bincode-deserializing that data into the current
+/// `Call` struct fails with `UnexpectedEof` because the trailing DeBank fields
+/// aren't present. `parse_call_trace` falls back to this struct on that error.
+///
+/// On `Into<Call>` conversion all DeBank fields default to "no info" — same
+/// values `LegacyCall`/`LegacyMixedCall` use. Downstream backfilled v25 blocks
+/// will therefore have empty `events`, `storage_contracts`, etc. — the same
+/// degradation set as RPC-mode backfill.
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct LegacyCall25 {
+    pub r#type: CallType,
+    pub from: Address,
+    pub to: Address,
+    pub parent_gas: u64,
+    pub gas: u64,
+    pub gas_used: u64,
+    pub value: U256,
+    pub input: Vec<u8>,
+    pub output: Vec<u8>,
+    pub error: Option<String>,
+    pub revert_reason: Option<String>,
+    pub calls: Vec<LegacyCall25>,
+}
+
 /// Represents a call in the VM trace.
 /// This version has subcalls in the form of "new" calls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +141,35 @@ impl From<LegacyMixedCall> for Call {
             events: vec![],
             parent_trace_id: None,
             trace_id: String::from(""),
+            pos_in_parent_trace: 0,
+            self_storage_change: false,
+            storage_change: false,
+            parent_failed: false,
+        }
+    }
+}
+
+impl From<LegacyCall25> for Call {
+    fn from(c: LegacyCall25) -> Self {
+        Self {
+            r#type: c.r#type,
+            from: c.from,
+            to: c.to,
+            parent_gas: c.parent_gas,
+            gas: c.gas,
+            gas_used: c.gas_used,
+            value: c.value,
+            input: c.input,
+            output: c.output,
+            error: c.error,
+            revert_reason: c.revert_reason,
+            calls: c.calls.into_iter().map(Into::into).collect(),
+            // DeBank fields default — Lens v25 PG data predates these fields,
+            // matching the degradation set of LegacyCall / LegacyMixedCall.
+            call_start_timestamp: 0,
+            events: vec![],
+            parent_trace_id: None,
+            trace_id: String::new(),
             pos_in_parent_trace: 0,
             self_storage_change: false,
             storage_change: false,
