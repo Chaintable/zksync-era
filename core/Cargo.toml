@@ -4,6 +4,7 @@ members = [
   "bin/block_reverter",
   "bin/contract-verifier",
   "bin/custom_genesis_export",
+  "bin/debank_blockfile_backfill",
   "bin/external_node",
   "bin/merkle_tree_consistency_checker",
   "bin/snapshots_creator",

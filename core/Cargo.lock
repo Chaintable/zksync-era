@@ -3855,6 +3855,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "debank_blockfile_backfill"
+version = "29.15.0-non-semver-compat"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
+ "flate2",
+ "serde_json",
+ "structopt",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.20",
+ "zksync_basic_types",
+ "zksync_dal",
+ "zksync_multivm",
+ "zksync_system_constants",
+ "zksync_types",
+ "zksync_web3_decl",
+]
+
+[[package]]
 name = "debugid"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

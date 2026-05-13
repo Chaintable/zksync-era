@@ -1,0 +1,34 @@
+[package]
+name = "debank_blockfile_backfill"
+description = "Backfill DeBank BlockFile to S3 from PG (PG mode) or official RPC (RPC mode)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[dependencies]
+zksync_types.workspace = true
+zksync_basic_types.workspace = true
+zksync_dal.workspace = true
+zksync_multivm.workspace = true
+zksync_web3_decl.workspace = true
+zksync_system_constants.workspace = true
+
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
+
+flate2.workspace = true
+futures.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+structopt.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
