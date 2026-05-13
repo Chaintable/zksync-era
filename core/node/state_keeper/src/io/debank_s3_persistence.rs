@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::io::Read as IoRead;
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,13 +14,13 @@ use tokio::task::JoinHandle;
 use zksync_multivm::{interface::TxExecutionStatus, tracers::debank};
 use zksync_types::{
     debank::{
-        BlockFile, DebankBlock, DebankOutPut, DebankTransaction, Header,
-        KafkaBlockChangeNotification, KafkaBlockContext,
+        assemble_block_file, BlockMeta, DebankOutPut, DebankTransaction,
+        KafkaBlockChangeNotification, KafkaBlockContext, TxBlockData,
     },
     l2::TransactionType,
     utils::deployed_address_evm_create,
     web3::Bytes,
-    Address, ExecuteTransactionCommon, H256, U256,
+    ExecuteTransactionCommon, H256,
 };
 
 use crate::{io::output_handler::StateKeeperOutputHandler, updates::UpdatesManager};
@@ -305,12 +304,7 @@ impl DebankS3OutputHandler {
         let block_number = l2_header.number.0 as u64;
         let block_timestamp = l2_header.timestamp;
 
-        let mut debank_transactions = Vec::new();
-        let mut all_traces = Vec::new();
-        let mut all_events = Vec::new();
-        let mut all_error_traces = Vec::new();
-        let mut all_error_events = Vec::new();
-        let mut global_log_index: u32 = 0;
+        let mut tx_results = Vec::new();
 
         for (idx, tx_result) in block.executed_transactions.iter().enumerate() {
             // Skip L1 and ProtocolUpgrade transactions
@@ -322,7 +316,6 @@ impl DebankS3OutputHandler {
             let tx_hash = tx_result.hash;
             let tx = &tx_result.transaction;
 
-            // Build DebankTransaction
             let to_address = tx.execute.contract_address.or_else(|| {
                 Some(deployed_address_evm_create(
                     l2_data.initiator_address,
@@ -349,7 +342,7 @@ impl DebankS3OutputHandler {
 
             let status = tx_result.execution_status == TxExecutionStatus::Success;
 
-            debank_transactions.push(DebankTransaction {
+            let debank_tx = DebankTransaction {
                 id: format!("{:#x}", tx_hash),
                 from: l2_data.initiator_address,
                 to: to_address,
@@ -363,114 +356,65 @@ impl DebankS3OutputHandler {
                 nonce: (*l2_data.nonce) as u64,
                 transaction_index: idx as u32,
                 value: tx.execute.value,
-            });
+            };
 
-            // Build traces and events from call traces
+            let mut traces = Vec::new();
+            let mut error_traces = Vec::new();
+            let mut events = Vec::new();
+            let mut error_events = Vec::new();
+
             if !tx_result.call_traces.is_empty() {
                 if let Some(mut first_call) = tx_result.call_trace() {
-                    // Set trace_id on root call
                     first_call.trace_id =
                         debank::to_hash(&[tx_hash.to_string().as_str(), "", "0"]);
 
-                    // Set pos_in_parent_trace for subcalls
                     for (i, subcall) in first_call.calls.iter_mut().enumerate() {
                         subcall.pos_in_parent_trace = i as u32;
                     }
 
-                    // Mark parent_failed on subcalls
                     debank::set_parent_failed(&mut first_call, false);
 
-                    // Push root trace
                     let root_trace =
                         debank::to_debank_trace(&first_call, tx_hash, vec![]);
+                    // root call has no parent so parent_failed is always false;
+                    // the `|| ... parent_failed` is kept for symmetry only.
                     if first_call.revert_reason.is_some() || first_call.parent_failed {
-                        all_error_traces.push(root_trace);
+                        error_traces.push(root_trace);
                     } else {
-                        all_traces.push(root_trace);
+                        traces.push(root_trace);
                     }
 
-                    // Recursively convert subcalls to traces/events
                     debank::add_trace_log(
                         tx_hash,
-                        &mut all_traces,
-                        &mut all_error_traces,
-                        &mut all_events,
-                        &mut all_error_events,
+                        &mut traces,
+                        &mut error_traces,
+                        &mut events,
+                        &mut error_events,
                         vec![],
                         &mut first_call,
                     );
-
-                    // Assign per-tx log_index to events
-                    for event in all_events.iter_mut().skip(global_log_index as usize) {
-                        event.log_index = global_log_index;
-                        global_log_index += 1;
-                    }
-                    // Don't increment global_log_index for error events
                 }
             }
+
+            tx_results.push(TxBlockData {
+                debank_tx,
+                traces,
+                error_traces,
+                events,
+                error_events,
+            });
         }
 
-        // Build storage_contracts from traces with self_storage_change
-        let mut seen = HashSet::new();
-        let storage_contracts: Vec<String> = all_traces
-            .iter()
-            .chain(all_error_traces.iter())
-            .filter(|trace| trace.self_storage_change)
-            .filter_map(|trace| {
-                let addr = if trace.call_type == "delegatecall" {
-                    format!("{:?}", trace.from_addr)
-                } else {
-                    format!("{:?}", trace.to_addr)
-                };
-                if seen.insert(addr.clone()) {
-                    Some(addr)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Assemble BlockFile
-        let block_file = BlockFile {
-            block: DebankBlock {
-                id: block_hash,
-                height: block_number,
-                parent_id: block.prev_block_hash,
-                base_fee_per_gas: Some(base_fee),
-                gas_limit: l2_header.gas_limit,
-                gas_used: debank_transactions.iter().map(|tx| tx.gas_used).sum(),
-                timestamp: block_timestamp,
-                process_start_timestamp: block_timestamp,
-                ..Default::default()
-            },
-            transactions: debank_transactions,
-            events: all_events,
-            traces: all_traces,
-            error_traces: all_error_traces,
-            error_events: all_error_events,
-            storage_contracts,
-        };
-
-        // keccak256 of RLP-encoded empty list — standard Ethereum empty uncles hash
-        let empty_uncles_hash = H256::from_slice(
-            &hex::decode("1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347")
-                .unwrap(),
-        );
-
-        // Build Header
-        let header = Header {
-            number: block_number,
+        let block_meta = BlockMeta {
             hash: block_hash,
             parent_hash: block.prev_block_hash,
-            sha3_uncles: empty_uncles_hash,
-            logs_bloom: l2_header.logs_bloom,
-            gas_limit: l2_header.gas_limit,
-            gas_used: block_file.block.gas_used,
+            number: block_number,
             timestamp: block_timestamp,
-            base_fee_per_gas: Some(U256::from(base_fee)),
-            miner: Address::default(),
-            ..Default::default()
+            base_fee_per_gas: base_fee,
+            gas_limit: l2_header.gas_limit,
+            logs_bloom: l2_header.logs_bloom,
         };
+        let (block_file, header) = assemble_block_file(block_meta, tx_results);
 
         let validation_hash = block_file.validation().validation_hash;
 
