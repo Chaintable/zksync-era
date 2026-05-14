@@ -3863,6 +3863,8 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "flate2",
+ "futures 0.3.31",
+ "serde",
  "serde_json",
  "structopt",
  "tokio",
