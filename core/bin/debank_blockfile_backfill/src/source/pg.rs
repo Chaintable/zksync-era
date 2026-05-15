@@ -191,45 +191,78 @@ impl Source for PgSource {
 
         let mut tx_results = Vec::with_capacity(tx_rows.len());
         for (idx, row) in tx_rows.iter().enumerate() {
-            // Skip L1 / ProtocolUpgrade transactions to align with EN realtime
-            let l2_data = match &row.tx.common_data {
-                ExecuteTransactionCommon::L2(data) => data,
-                _ => continue,
-            };
-
             let tx_hash = row.tx.hash();
             let tx = &row.tx;
 
+            // Per-tx-type metadata extraction. Both L2 and L1 priority txs
+            // produce real Call traces + events the downstream cares about
+            // (lens block 2 e.g. is 5 L1 priority txs / 227 traces). Only
+            // ProtocolUpgrade is rare enough to skip.
+            let (from, gas_limit, gas_price, gas_fee_cap, gas_tip_cap, nonce) =
+                match &tx.common_data {
+                    ExecuteTransactionCommon::L2(l2_data) => {
+                        let gas_limit = l2_data.fee.gas_limit.as_u64();
+                        let gas_price = l2_data
+                            .fee
+                            .get_effective_gas_price(header.base_fee_per_gas.into())
+                            .as_u64();
+                        let (gas_fee_cap, gas_tip_cap) = if l2_data.transaction_type as u32
+                            >= TransactionType::EIP1559Transaction as u32
+                        {
+                            (
+                                l2_data.fee.max_fee_per_gas.as_u64(),
+                                l2_data.fee.max_priority_fee_per_gas.as_u64(),
+                            )
+                        } else {
+                            (0, 0)
+                        };
+                        (
+                            l2_data.initiator_address,
+                            gas_limit,
+                            gas_price,
+                            gas_fee_cap,
+                            gas_tip_cap,
+                            (*l2_data.nonce) as u64,
+                        )
+                    }
+                    ExecuteTransactionCommon::L1(l1_data) => {
+                        // L1 priority tx. lens RPC eth_getTransactionByHash
+                        // reports gasPrice=0 / maxFeePerGas=0 / maxPriorityFeePerGas=0
+                        // / nonce=0 for these, despite L1TxCommonData carrying
+                        // max_fee_per_gas / gas_limit values. Match RPC.
+                        (
+                            l1_data.sender,
+                            l1_data.gas_limit.as_u64(),
+                            0u64,
+                            0u64,
+                            0u64,
+                            0u64,
+                        )
+                    }
+                    ExecuteTransactionCommon::ProtocolUpgrade(_) => continue,
+                };
+
+            // L2 txs without explicit `to` are EVM CREATE (deployed address from
+            // sender + nonce). L1 txs without `to` are deposit / mint operations
+            // — lens RPC reports `to=0x0` for those.
             let to_address = tx.execute.contract_address.or_else(|| {
-                Some(deployed_address_evm_create(
-                    l2_data.initiator_address,
-                    (*l2_data.nonce).into(),
-                ))
+                match &tx.common_data {
+                    ExecuteTransactionCommon::L2(l2) => Some(deployed_address_evm_create(
+                        l2.initiator_address,
+                        (*l2.nonce).into(),
+                    )),
+                    _ => Some(Address::zero()),
+                }
             });
 
-            let gas_limit = l2_data.fee.gas_limit.as_u64();
             let gas_used = gas_limit.saturating_sub(row.refunded_gas);
-            let gas_price = l2_data
-                .fee
-                .get_effective_gas_price(header.base_fee_per_gas.into())
-                .as_u64();
-
-            let (gas_fee_cap, gas_tip_cap) =
-                if l2_data.transaction_type as u32 >= TransactionType::EIP1559Transaction as u32 {
-                    (
-                        l2_data.fee.max_fee_per_gas.as_u64(),
-                        l2_data.fee.max_priority_fee_per_gas.as_u64(),
-                    )
-                } else {
-                    (0, 0)
-                };
 
             // status: true iff tx executed without error (PG `transactions.error` is NULL)
             let status = row.error.is_none();
 
             let debank_tx = DebankTransaction {
                 id: format!("{:#x}", tx_hash),
-                from: l2_data.initiator_address,
+                from,
                 to: to_address,
                 gas_limit,
                 gas_price,
@@ -238,7 +271,7 @@ impl Source for PgSource {
                 gas_fee_cap,
                 gas_tip_cap,
                 input: tx.execute.calldata.clone().into(),
-                nonce: (*l2_data.nonce) as u64,
+                nonce,
                 transaction_index: idx as u32,
                 value: tx.execute.value,
             };
