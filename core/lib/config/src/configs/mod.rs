@@ -35,7 +35,6 @@ pub use self::{
     },
     snapshot_recovery::SnapshotRecoveryConfig,
     snapshots_creator::SnapshotsCreatorConfig,
-    tee_proof_data_handler::TeeProofDataHandlerConfig,
     tx_sink::TxSinkConfig,
     utils::PrometheusConfig,
     vm_runner::{BasicWitnessInputProducerConfig, ProtectiveReadsWriterConfig},
@@ -79,7 +78,6 @@ pub mod pruning;
 pub mod secrets;
 pub mod snapshot_recovery;
 pub mod snapshots_creator;
-pub mod tee_proof_data_handler;
 pub mod tx_sink;
 pub mod utils;
 pub mod vm_runner;
