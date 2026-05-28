@@ -184,8 +184,11 @@ impl DebankS3OutputHandler {
         let last_ctx = self.last_block_context.clone();
         let is_backup = self.is_backup;
         self.pending_upload = Some(tokio::spawn(async move {
-            const MAX_RETRIES: u32 = 5;
+            // ~1 hour total: first 5 attempts cover ~62s (2+4+8+16+32),
+            // remaining 59 attempts at the 60s cap add ~3540s.
+            const MAX_RETRIES: u32 = 64;
             const INITIAL_BACKOFF: Duration = Duration::from_secs(2);
+            const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
             let mut uploaded = false;
             for attempt in 0..MAX_RETRIES {
@@ -195,7 +198,11 @@ impl DebankS3OutputHandler {
                         break;
                     }
                     Err(e) => {
-                        let backoff = INITIAL_BACKOFF * 2u32.pow(attempt);
+                        let backoff = std::cmp::min(
+                            INITIAL_BACKOFF
+                                .saturating_mul(2u32.saturating_pow(attempt)),
+                            MAX_BACKOFF,
+                        );
                         tracing::warn!(
                             "Failed to upload debank data for block {} to S3 (attempt {}/{}): {:#}. Retrying in {:?}",
                             block_number,
