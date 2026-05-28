@@ -36,7 +36,7 @@ jobs:
 
       - name: Docker build and push
         run: |
-          git submodule update --init --recursive 
+          git submodule update --init
           docker build -t ${REGISTRY}/${IMAGE}:${{ matrix.arch }}-${REVISION} -f ${DOCKERFILE} .
           docker push ${REGISTRY}/${IMAGE}:${{ matrix.arch }}-${REVISION}
 
