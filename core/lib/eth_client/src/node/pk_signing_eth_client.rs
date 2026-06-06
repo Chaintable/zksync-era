@@ -3,6 +3,7 @@ use zksync_node_framework::{
     wiring_layer::{WiringError, WiringLayer},
     FromContext, IntoContext,
 };
+use zksync_operator_signer::OperatorSigner;
 use zksync_shared_resources::contracts::{
     L1ChainContractsResource, SettlementLayerContractsResource,
 };
@@ -12,12 +13,11 @@ use zksync_web3_decl::{
 };
 
 use super::resources::{BoundEthInterfaceForBlobsResource, BoundEthInterfaceForL2Resource};
-use crate::{
-    clients::{GKMSSigningClient, PKSigningClient},
-    BoundEthInterface, EthInterface,
-};
+use crate::{clients::SigningClient, BoundEthInterface, EthInterface};
 
-/// Wiring layer for [`PKSigningClient`].
+/// Wiring layer for creating signing Ethereum clients.
+///
+/// Supports both local private key and GCP KMS signing.
 #[derive(Debug)]
 pub struct PKSigningEthClientLayer {
     gas_adjuster_config: GasAdjusterConfig,
@@ -78,57 +78,47 @@ impl WiringLayer for PKSigningEthClientLayer {
             .await
             .map_err(WiringError::internal)?;
 
-        let signing_client: Box<dyn BoundEthInterface>;
-        if let Some(gkms_op_key_name) = self.operator.gkms_key_name() {
-            let gkms_sc = GKMSSigningClient::new_raw(
-                l1_diamond_proxy_addr,
-                gas_adjuster_config.default_priority_fee_per_gas,
-                l1_chain_id,
-                query_client.clone(),
-                gkms_op_key_name,
-            )
-            .await;
-            signing_client = Box::new(gkms_sc);
-        } else {
-            let private_key = self.operator.private_key();
-            let sc = PKSigningClient::new_raw(
-                private_key.clone(),
-                l1_diamond_proxy_addr,
-                gas_adjuster_config.default_priority_fee_per_gas,
-                l1_chain_id,
-                query_client.clone(),
-            );
-            signing_client = Box::new(sc);
-        }
+        let operator_signer = OperatorSigner::from_wallet(&self.operator);
+        let operator_address = operator_signer
+            .address()
+            .await
+            .map_err(|e| WiringError::Internal(e.into()))?;
+        tracing::info!("Operator address: {operator_address:?}");
 
-        let signing_client_for_blobs = if let Some(blob_operator) = self.blob_operator {
-            if let Some(gkms_op_key_name) = blob_operator.gkms_key_name() {
-                let signing_client_for_blobs = GKMSSigningClient::new_raw(
+        let signing_client = SigningClient::new(
+            query_client.clone(),
+            zksync_contracts::hyperchain_contract(),
+            operator_address,
+            operator_signer.clone(),
+            l1_diamond_proxy_addr,
+            gas_adjuster_config.default_priority_fee_per_gas.into(),
+            l1_chain_id,
+        );
+        let signing_client = Box::new(signing_client);
+
+        let signing_client_for_blobs = match self.blob_operator {
+            Some(ref blob_operator) => {
+                let blob_signer = OperatorSigner::from_wallet(blob_operator);
+                let blob_address = blob_signer
+                    .address()
+                    .await
+                    .map_err(|e| WiringError::Internal(e.into()))?;
+                tracing::info!("Blob operator address: {blob_address:?}");
+
+                let signing_client_for_blobs = SigningClient::new(
+                    query_client.clone(),
+                    zksync_contracts::hyperchain_contract(),
+                    blob_address,
+                    blob_signer,
                     l1_diamond_proxy_addr,
-                    gas_adjuster_config.default_priority_fee_per_gas,
+                    gas_adjuster_config.default_priority_fee_per_gas.into(),
                     l1_chain_id,
-                    query_client,
-                    gkms_op_key_name,
-                )
-                .await;
-                Some(BoundEthInterfaceForBlobsResource(Box::new(
-                    signing_client_for_blobs,
-                )))
-            } else {
-                let private_key = blob_operator.private_key();
-                let signing_client_for_blobs = PKSigningClient::new_raw(
-                    private_key.clone(),
-                    l1_diamond_proxy_addr,
-                    gas_adjuster_config.default_priority_fee_per_gas,
-                    l1_chain_id,
-                    query_client,
                 );
                 Some(BoundEthInterfaceForBlobsResource(Box::new(
                     signing_client_for_blobs,
                 )))
             }
-        } else {
-            None
+            None => None,
         };
 
         let signing_client_for_gateway = match input.gateway_client {
@@ -137,33 +127,18 @@ impl WiringLayer for PKSigningEthClientLayer {
                     .fetch_chain_id()
                     .await
                     .map_err(WiringError::internal)?;
-
-                let signing_client_for_gateway: Box<dyn BoundEthInterface>;
-
-                if let Some(gkms_op_key_name) = self.operator.gkms_key_name() {
-                    let gkms_sc = GKMSSigningClient::new_raw(
-                        l1_diamond_proxy_addr,
-                        gas_adjuster_config.default_priority_fee_per_gas,
-                        l2_chain_id,
-                        gateway_client,
-                        gkms_op_key_name,
-                    )
-                    .await;
-
-                    signing_client_for_gateway = Box::new(gkms_sc);
-                } else {
-                    let private_key = self.operator.private_key();
-                    let sc = PKSigningClient::new_raw(
-                        private_key.clone(),
-                        l1_diamond_proxy_addr,
-                        gas_adjuster_config.default_priority_fee_per_gas,
-                        l2_chain_id,
-                        gateway_client,
-                    );
-
-                    signing_client_for_gateway = Box::new(sc);
-                }
-                Some(BoundEthInterfaceForL2Resource(signing_client_for_gateway))
+                let signing_client_for_gateway = SigningClient::new(
+                    gateway_client,
+                    zksync_contracts::hyperchain_contract(),
+                    operator_address,
+                    operator_signer,
+                    input.contracts.0.chain_contracts_config.diamond_proxy_addr,
+                    gas_adjuster_config.default_priority_fee_per_gas.into(),
+                    l2_chain_id,
+                );
+                Some(BoundEthInterfaceForL2Resource(Box::new(
+                    signing_client_for_gateway,
+                )))
             }
             SettlementLayerClient::L1(_) => None,
         };
