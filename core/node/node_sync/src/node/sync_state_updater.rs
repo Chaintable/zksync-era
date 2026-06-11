@@ -121,9 +121,9 @@ impl Task for SyncStateUpdater {
             };
 
             let main_node_block = match self.main_node_client.get_block_number().await {
-                Ok(block) => block,
+                Ok(block_number) => block_number,
                 Err(e) => {
-                    tracing::warn!("Failed to get main node block number: {e:#}");
+                    tracing::warn!("Failed to fetch main node block number: {e}");
                     continue;
                 }
             };
