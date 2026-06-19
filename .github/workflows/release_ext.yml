@@ -11,9 +11,11 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY: 294354037686.dkr.ecr.ap-northeast-1.amazonaws.com
-  IMAGE: zksync_external
+  REGISTRY: public.ecr.aws/b2h7a5c4/chaintable
+  IMAGE: zksync-era
+  CHAINS: "cronos-zkevm"
   DOCKERFILE: docker/external-node/Dockerfile
+  AWS_REGION: us-east-1
 
 jobs:
   build-artifacts:
@@ -21,6 +23,9 @@ jobs:
       matrix:
         arch: [amd64, arm64]
     runs-on: [self-hosted, "${{ matrix.arch }}"]
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -42,6 +47,18 @@ jobs:
             echo "REVISION=${GITHUB_SHA:0:7}" >> $GITHUB_ENV
           fi
 
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
       - name: Docker build and push
         run: |
           git submodule update --init --recursive
@@ -51,20 +68,26 @@ jobs:
   merge-docker-manifest:
     runs-on: [self-hosted, general]
     needs: build-artifacts
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Configure AWS credentials
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ap-northeast-1
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
 
       - name: Set env
         run: |
@@ -74,15 +97,20 @@ jobs:
             echo "REVISION=${GITHUB_SHA:0:7}" >> $GITHUB_ENV
           fi
 
-      - name: Merge manifest
+      - name: Merge manifest and alias per-chain writers
         run: |
           docker pull --platform=linux/amd64 ${REGISTRY}/${IMAGE}:amd64-${REVISION}
           docker pull --platform=linux/arm64 ${REGISTRY}/${IMAGE}:arm64-${REVISION}
+          # repo 级 multi-arch manifest
           docker buildx imagetools create --tag ${REGISTRY}/${IMAGE}:${REVISION} ${REGISTRY}/${IMAGE}:amd64-${REVISION} ${REGISTRY}/${IMAGE}:arm64-${REVISION}
+          # 各链 writer 别名(同 digest,多名)
+          for c in ${CHAINS}; do
+            docker buildx imagetools create --tag ${REGISTRY}/${c}-writer:${REVISION} ${REGISTRY}/${IMAGE}:${REVISION}
+          done
           docker rmi ${REGISTRY}/${IMAGE}:amd64-${REVISION}
           docker rmi ${REGISTRY}/${IMAGE}:arm64-${REVISION}
 
       - name: Lark Notification
         continue-on-error: true
         run: |
-          notiv3 "Blockchain zksync_external image pushed 🎉" ${REGISTRY}/${IMAGE}:${REVISION}
+          notiv3 "Blockchain zksync-era image pushed 🎉" ${REGISTRY}/${IMAGE}:${REVISION}
