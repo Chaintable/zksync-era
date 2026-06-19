@@ -5,7 +5,7 @@ COPY . .
 RUN apt-get update && apt-get install -y protobuf-compiler cmake
 RUN cargo build --manifest-path ./core/Cargo.toml --release --bin zksync_external_node --bin zksync_s3_backfill
 
-FROM matterlabs/external-node:v29.20.0-alpha
+FROM matterlabs/external-node:v31.0.0-alpha
 
 RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client && rm -rf /var/lib/apt/lists/*
 

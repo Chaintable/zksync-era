@@ -8295,7 +8295,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_basic_types"
-version = "29.20.0-non-semver-compat"
+version = "31.0.0-non-semver-compat"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8385,7 +8385,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_contracts"
-version = "29.20.0-non-semver-compat"
+version = "31.0.0-non-semver-compat"
 dependencies = [
  "hex",
  "once_cell",
@@ -8397,7 +8397,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_crypto_primitives"
-version = "29.20.0-non-semver-compat"
+version = "31.0.0-non-semver-compat"
 dependencies = [
  "anyhow",
  "blake2",
@@ -8413,7 +8413,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_mini_merkle_tree"
-version = "29.20.0-non-semver-compat"
+version = "31.0.0-non-semver-compat"
 dependencies = [
  "once_cell",
  "zksync_basic_types",
@@ -8460,7 +8460,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_system_constants"
-version = "29.20.0-non-semver-compat"
+version = "31.0.0-non-semver-compat"
 dependencies = [
  "once_cell",
  "zksync_basic_types",
@@ -8468,7 +8468,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_types"
-version = "29.20.0-non-semver-compat"
+version = "31.0.0-non-semver-compat"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8495,7 +8495,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_utils"
-version = "29.20.0-non-semver-compat"
+version = "31.0.0-non-semver-compat"
 dependencies = [
  "anyhow",
  "once_cell",
@@ -8505,7 +8505,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_web3_decl"
-version = "29.20.0-non-semver-compat"
+version = "31.0.0-non-semver-compat"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types",
