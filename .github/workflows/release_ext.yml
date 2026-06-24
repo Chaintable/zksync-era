@@ -20,8 +20,12 @@ jobs:
   build-artifacts:
     strategy:
       matrix:
-        arch: [ amd64, arm64 ]
-    runs-on: [self-hosted, "${{ matrix.arch }}"]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       id-token: write
@@ -58,7 +62,7 @@ jobs:
           docker push ${REGISTRY}/${IMAGE}:${{ matrix.arch }}-${REVISION}
 
   merge-docker-manifest:
-    runs-on: [self-hosted, general]
+    runs-on: ubuntu-latest
     needs: build-artifacts
     permissions:
       contents: read
