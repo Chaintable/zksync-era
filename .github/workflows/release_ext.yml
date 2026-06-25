@@ -22,15 +22,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest-m
+          - runner: ubuntu-latest
             arch: amd64
-          - runner: ubuntu-latest-arm64
+          - runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       id-token: write
     steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
       - name: Checkout
         uses: actions/checkout@v2
         with:
