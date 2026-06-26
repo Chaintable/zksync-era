@@ -1,10 +1,14 @@
 use std::time::Duration;
 
 use anyhow::{bail, Result};
-use etcd_client::{Client, Compare, CompareOp, Txn, TxnOp};
+use etcd_client::{Client, PutOptions};
 use serde::{Deserialize, Serialize};
-use tokio::{net::TcpStream, sync::watch, time::interval};
-use tracing::{debug, error, info};
+use tokio::{
+    net::TcpStream,
+    sync::watch,
+    time::{interval, MissedTickBehavior},
+};
+use tracing::{error, info};
 use zksync_config::configs::EtcdRegisterConfig;
 use zksync_node_framework::{
     service::StopReceiver,
@@ -37,21 +41,73 @@ pub struct Register {
     etcd_client: Client,
     key: String,
     value: String,
+    /// TTL (seconds) of the etcd lease the registration key is attached to.
+    /// Derived from `keep_alive_interval_ms` so the lease always outlives a
+    /// few missed keep-alive ticks but still expires promptly when the node dies.
+    lease_ttl_secs: i64,
 }
 
 impl Register {
-    async fn register(&mut self) -> Result<()> {
+    /// Grants a fresh lease and writes the registration key attached to it.
+    ///
+    /// Attaching the key to a lease is what gives the gateway a liveness signal:
+    /// if this node stops renewing the lease (crash, network partition, OOM),
+    /// etcd expires the lease and removes the key automatically, so the gateway
+    /// stops routing to a dead backend. Returns the granted lease id.
+    async fn register(&mut self) -> Result<i64> {
+        let lease_id = self
+            .etcd_client
+            .lease_grant(self.lease_ttl_secs, None)
+            .await?
+            .id();
         self.etcd_client
-            .put(self.key.clone(), self.value.clone(), None)
+            .put(
+                self.key.clone(),
+                self.value.clone(),
+                Some(PutOptions::new().with_lease(lease_id)),
+            )
             .await?;
-        info!(target: "register", "register key:{}, success", self.key);
+        info!(
+            target: "register",
+            "register key:{} with lease {lease_id} (ttl {}s), success",
+            self.key, self.lease_ttl_secs
+        );
+        Ok(lease_id)
+    }
+
+    /// Renews the lease (refreshing its TTL) and re-asserts the key/value.
+    ///
+    /// The keep-alive renews the TTL so the key survives; the `put` keeps the
+    /// advertised `NodeInfo` current and re-creates the key should it have been
+    /// removed out-of-band, while re-binding it to the live lease.
+    async fn keep_alive(&mut self, lease_id: i64) -> Result<()> {
+        let (mut keeper, mut stream) = self.etcd_client.lease_keep_alive(lease_id).await?;
+        keeper.keep_alive().await?;
+        // Drain the single keep-alive ack; a TTL of 0 means the lease is gone.
+        match stream.message().await? {
+            Some(resp) if resp.ttl() <= 0 => bail!("lease {lease_id} expired"),
+            _ => {}
+        }
+        self.etcd_client
+            .put(
+                self.key.clone(),
+                self.value.clone(),
+                Some(PutOptions::new().with_lease(lease_id)),
+            )
+            .await?;
         Ok(())
     }
 
-    async fn unregister(&mut self) -> Result<()> {
-        self.etcd_client.delete(self.key.clone(), None).await?;
+    /// Revokes the lease (which deletes every key attached to it) on graceful
+    /// shutdown. Falls back to an explicit delete in case the revoke fails.
+    async fn unregister(&mut self, lease_id: i64) {
+        if let Err(e) = self.etcd_client.lease_revoke(lease_id).await {
+            error!(target: "register", "lease {lease_id} revoke error: {e}");
+        }
+        if let Err(e) = self.etcd_client.delete(self.key.clone(), None).await {
+            error!(target: "register", "unregister delete error: {e}");
+        }
         info!(target: "register", "unregister key:{} success", self.key);
-        Ok(())
     }
 
     pub async fn new(
@@ -87,44 +143,51 @@ impl Register {
             } as u64,
         })?;
 
+        // Give the lease enough room to outlive a few missed keep-alive ticks
+        // (network blips) while still expiring quickly on real node death.
+        let lease_ttl_secs =
+            ((etcd_cfg.keep_alive_interval_ms.saturating_mul(3)) / 1000).max(2) as i64;
+
         Ok(Self {
             etcd_cfg,
             etcd_client,
             key,
             value,
+            lease_ttl_secs,
         })
     }
 
     pub async fn start(mut self) -> Result<watch::Sender<()>> {
         let (tx, mut rx) = watch::channel(());
         let keep_alive_interval = Duration::from_millis(self.etcd_cfg.keep_alive_interval_ms);
-        let mut interval = interval(keep_alive_interval);
-        self.register().await?;
         tokio::spawn(async move {
+            let mut interval = interval(keep_alive_interval);
+            interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            // `None` means "not currently registered"; the first (immediate) tick
+            // performs the initial registration. Transient etcd errors are logged
+            // and retried on the next tick instead of taking the whole node down.
+            let mut lease_id: Option<i64> = None;
             loop {
                 tokio::select! {
                     _ = rx.changed() => {
-                        if let Err(e) = self.unregister().await {
-                            error!(target: "register", "unregister error: {e}");
+                        if let Some(id) = lease_id {
+                            self.unregister(id).await;
                         }
                         break;
                     }
                     _ = interval.tick() => {
-                        let txn = Txn::new()
-                            .when(vec![Compare::version(self.key.clone(), CompareOp::Equal, 0)])
-                            .and_then(vec![TxnOp::put(self.key.clone(), self.value.clone(), None)])
-                            .or_else(vec![]);
-
-                        match self.etcd_client.txn(txn).await {
-                            Result::Ok(resp) => {
-                                if resp.succeeded() {
-                                    info!(target: "register", "register key:{}, success", self.key);
-                                } else {
-                                    debug!(target: "register", "key:{} already exists, skip registration", self.key);
+                        match lease_id {
+                            None => match self.register().await {
+                                Ok(id) => lease_id = Some(id),
+                                Err(e) => error!(target: "register", "register error: {e}"),
+                            },
+                            Some(id) => {
+                                if let Err(e) = self.keep_alive(id).await {
+                                    // Lost the lease/connection: drop it and re-register
+                                    // (with a brand-new lease) on the next tick.
+                                    error!(target: "register", "keep-alive error: {e}, will re-register");
+                                    lease_id = None;
                                 }
-                            }
-                            Result::Err(e) => {
-                                error!(target: "register", "register error: {e}");
                             }
                         }
                     }
@@ -188,16 +251,16 @@ impl WiringLayer for EtcdRegisterLayer {
     }
 
     async fn wire(self, _input: Self::Input) -> Result<Self::Output, WiringError> {
-        let register_task = self
-            .etcd_cfg
-            .as_ref()
-            .filter(|cfg| cfg.enabled)
-            .map(|cfg| EtcdRegisterTask {
-                chain_id: self.chain_id,
-                version: self.version.clone(),
-                etcd_cfg: cfg.clone(),
-                is_archive: self.is_archive,
-            });
+        let register_task =
+            self.etcd_cfg
+                .as_ref()
+                .filter(|cfg| cfg.enabled)
+                .map(|cfg| EtcdRegisterTask {
+                    chain_id: self.chain_id,
+                    version: self.version.clone(),
+                    etcd_cfg: cfg.clone(),
+                    is_archive: self.is_archive,
+                });
         Ok(Output { register_task })
     }
 }
