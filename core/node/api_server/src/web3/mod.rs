@@ -65,6 +65,12 @@ pub fn set_pipeline_node_role(role: &'static str) {
     PIPELINE_NODE_INFO_METRICS.node_info[&NodeRoleLabel { role }].set(1);
 }
 
+/// Enables (or disables) emitting `leafage_rpc_call_time` as a rolling-summary gauge instead of
+/// a histogram. Call once at EN startup before the metrics exporter serves any scrape.
+pub fn init_leafage_rpc_summary(enabled: bool) {
+    metrics::init_leafage_rpc_summary(enabled);
+}
+
 pub mod backend_jsonrpsee;
 pub mod mempool_cache;
 pub(super) mod metrics;

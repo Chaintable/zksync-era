@@ -10554,6 +10554,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sketches-ddsketch"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c6f73aeb92d671e0cc4dca167e59b2deb6387c375391bc99ee743f326994a2b"
+
+[[package]]
 name = "slab"
 version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14851,6 +14857,7 @@ dependencies = [
  "rustc-hex",
  "serde",
  "serde_json",
+ "sketches-ddsketch",
  "strum 0.26.3",
  "tempfile",
  "test-casing",

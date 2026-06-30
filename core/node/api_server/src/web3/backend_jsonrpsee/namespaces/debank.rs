@@ -16,7 +16,11 @@ use zksync_web3_decl::{
 };
 
 use crate::web3::{
-    metrics::{LeafageStatusLabels, MethodNameLabel, LEAFAGE_RPC_METRICS},
+    metrics::{
+        leafage_rpc_summary_enabled, record_leafage_rpc_summary, LeafageStatusLabels,
+        MethodNameLabel, LEAFAGE_RPC_COMMON_METRICS, LEAFAGE_RPC_HISTOGRAM_METRICS,
+        LEAFAGE_RPC_TIME_SUMMARY_COUNT_METRICS,
+    },
     namespaces::DebankNamespace,
 };
 
@@ -37,13 +41,18 @@ fn observe_leafage_call<T>(
     result: Result<T, ErrorObjectOwned>,
 ) -> RpcResult<T> {
     let elapsed = started_at.elapsed();
-    LEAFAGE_RPC_METRICS.time[&MethodNameLabel { method_name }].observe(elapsed);
+    if leafage_rpc_summary_enabled() {
+        LEAFAGE_RPC_TIME_SUMMARY_COUNT_METRICS.time_count[&MethodNameLabel { method_name }].inc();
+        record_leafage_rpc_summary(method_name, elapsed);
+    } else {
+        LEAFAGE_RPC_HISTOGRAM_METRICS.time[&MethodNameLabel { method_name }].observe(elapsed);
+    }
     let return_code = result
         .as_ref()
         .err()
         .map(|err| err.code())
         .unwrap_or(0);
-    LEAFAGE_RPC_METRICS.status[&LeafageStatusLabels {
+    LEAFAGE_RPC_COMMON_METRICS.status[&LeafageStatusLabels {
         method_name,
         return_code,
     }]
