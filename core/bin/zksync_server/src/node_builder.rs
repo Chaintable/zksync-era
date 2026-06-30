@@ -187,6 +187,11 @@ impl MainNodeBuilder {
 
     fn add_prometheus_exporter_layer(mut self) -> anyhow::Result<Self> {
         let prom_config = &self.configs.prometheus_config;
+        // Keep the summary record path in sync with the registry filter that `to_pull_config`
+        // applies from the same flag; otherwise enabling it here would register the summary group
+        // while still recording into the (filtered-out) histogram group, silently dropping the
+        // `leafage_rpc_call_time` latency body. The main server serves `DebankNamespace` too.
+        zksync_node_api_server::web3::init_leafage_rpc_summary(prom_config.leafage_rpc_summary);
         if let Some(prom_config) = prom_config.to_pull_config() {
             self.node.add_layer(PrometheusExporterLayer(prom_config));
         } else {
