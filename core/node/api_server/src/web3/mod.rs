@@ -66,7 +66,14 @@ pub fn set_pipeline_node_role(role: &'static str) {
 }
 
 /// Enables (or disables) emitting `leafage_rpc_call_time` as a rolling-summary gauge instead of
-/// a histogram. Call once at EN startup before the metrics exporter serves any scrape.
+/// a histogram, and registers the scrape hook. Call once at startup before the metrics exporter
+/// serves any scrape.
+///
+/// INVARIANT: every binary that builds a Prometheus exporter from `PrometheusConfig` (whose
+/// `leafage_rpc_summary` flag drives the exporter-side registry filter in `zksync_vlog`) **and**
+/// serves `DebankNamespace` must call this with the same flag. Skipping it while the flag is
+/// `true` makes the filter keep the summary group but leaves the record path writing into the
+/// filtered-out histogram group, silently dropping the latency metric.
 pub fn init_leafage_rpc_summary(enabled: bool) {
     metrics::init_leafage_rpc_summary(enabled);
 }

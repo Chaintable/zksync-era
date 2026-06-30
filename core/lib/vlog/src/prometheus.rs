@@ -66,6 +66,8 @@ impl PrometheusExporterConfig {
         // Pick the histogram or the rolling-summary variant of `leafage_rpc_call_time` so that the
         // same-named metric is registered under exactly one `# TYPE` (registering both panics on
         // the duplicate name); the dropped group is excluded entirely, descriptor included.
+        // The two strings are the `zksync_node_api_server` metric-group struct names
+        // (LeafageRpcTimeSummary / LeafageRpcTimeHistogram); keep them in sync on rename.
         let leafage_summary = self.leafage_rpc_summary;
         let registry = MetricsCollection::lazy()
             .filter(move |group| match group.name {

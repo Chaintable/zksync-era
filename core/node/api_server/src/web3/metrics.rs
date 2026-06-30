@@ -530,6 +530,9 @@ pub(crate) static LEAFAGE_RPC_COMMON_METRICS: vise::Global<LeafageRpcCommonMetri
     vise::Global::new();
 
 // `leafage_rpc_call_time` as a histogram — collected when the summary toggle is OFF (default).
+// NOTE: this struct name is matched as a string literal by the exporter filter in
+// `zksync_vlog::prometheus`; renaming it requires updating that match (else both same-named
+// groups register and vise panics on the duplicate descriptor at startup).
 #[derive(Debug, Metrics)]
 #[metrics(prefix = "leafage_rpc_call")]
 pub(crate) struct LeafageRpcTimeHistogram {
@@ -543,6 +546,8 @@ pub(crate) static LEAFAGE_RPC_HISTOGRAM_METRICS: vise::Global<LeafageRpcTimeHist
 
 // `leafage_rpc_call_time{quantile=...}` as a rolling-summary gauge — collected when the toggle
 // is ON. Filled at scrape time from `LEAFAGE_SUMMARY_STATE` via the `before_scrape` hook.
+// NOTE: this struct name is matched as a string literal by the exporter filter in
+// `zksync_vlog::prometheus`; renaming it requires updating that match (see LeafageRpcTimeHistogram).
 #[derive(Debug, Metrics)]
 #[metrics(prefix = "leafage_rpc_call")]
 pub(crate) struct LeafageRpcTimeSummary {
