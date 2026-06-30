@@ -1,10 +1,21 @@
 //! Metrics for the JSON-RPC server.
 
-use std::{borrow::Cow, fmt, time::Duration};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fmt,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+    time::{Duration, Instant},
+};
 
+use once_cell::sync::Lazy;
+use sketches_ddsketch::{Config, DDSketch};
 use vise::{
-    Buckets, Counter, EncodeLabelSet, EncodeLabelValue, Family, Gauge, Histogram, LabeledFamily,
-    Metrics, MetricsFamily, Unit,
+    Buckets, Collector, Counter, EncodeLabelSet, EncodeLabelValue, Family, Gauge, Histogram,
+    LabeledFamily, Metrics, MetricsFamily, Unit,
 };
 use zksync_instrument::filter::{report_filter, ReportFilter};
 use zksync_types::api;
@@ -504,17 +515,129 @@ pub(crate) struct LeafageStatusLabels {
     pub return_code: i32,
 }
 
+// `leafage_rpc_call_time` is split into three same-prefix groups so the latency body can be
+// toggled (histogram vs rolling-summary) without touching the counters. `status` /
+// `time_count` are consumed by the `NoFreshBlockProduced` alert, so they are always registered.
 #[derive(Debug, Metrics)]
 #[metrics(prefix = "leafage_rpc_call")]
-pub(crate) struct LeafageRpcMetrics {
+pub(crate) struct LeafageRpcCommonMetrics {
     pub status: Family<LeafageStatusLabels, Counter>,
     pub time_count: Family<MethodNameLabel, Counter>,
+}
+
+#[vise::register]
+pub(crate) static LEAFAGE_RPC_COMMON_METRICS: vise::Global<LeafageRpcCommonMetrics> =
+    vise::Global::new();
+
+// `leafage_rpc_call_time` as a histogram — collected when the summary toggle is OFF (default).
+#[derive(Debug, Metrics)]
+#[metrics(prefix = "leafage_rpc_call")]
+pub(crate) struct LeafageRpcTimeHistogram {
     #[metrics(buckets = Buckets::LATENCIES)]
     pub time: Family<MethodNameLabel, Histogram<Duration>>,
 }
 
 #[vise::register]
-pub(crate) static LEAFAGE_RPC_METRICS: vise::Global<LeafageRpcMetrics> = vise::Global::new();
+pub(crate) static LEAFAGE_RPC_HISTOGRAM_METRICS: vise::Global<LeafageRpcTimeHistogram> =
+    vise::Global::new();
+
+// `leafage_rpc_call_time{quantile=...}` as a rolling-summary gauge — collected when the toggle
+// is ON. Filled at scrape time from `LEAFAGE_SUMMARY_STATE` via the `before_scrape` hook.
+#[derive(Debug, Metrics)]
+#[metrics(prefix = "leafage_rpc_call")]
+pub(crate) struct LeafageRpcTimeSummary {
+    #[metrics(labels = ["method_name", "quantile"])]
+    pub time: LabeledFamily<(&'static str, &'static str), Gauge<f64>, 2>,
+}
+
+#[vise::register]
+pub(crate) static LEAFAGE_RPC_SUMMARY_COLLECTOR: Collector<LeafageRpcTimeSummary> =
+    Collector::new();
+
+// Rolling window mirrors the standard-chain leafage summary (metrics-exporter-prometheus
+// default: 3 buckets × 20s = 60s).
+const SUMMARY_WINDOW_SECS: u64 = 20;
+const SUMMARY_NUM_BUCKETS: usize = 3;
+const SUMMARY_QUANTILES: [(f64, &str); 4] =
+    [(0.5, "0.5"), (0.9, "0.9"), (0.95, "0.95"), (0.99, "0.99")];
+
+static LEAFAGE_RPC_SUMMARY_ENABLED: AtomicBool = AtomicBool::new(false);
+
+struct RollingState {
+    buckets: [DDSketch; SUMMARY_NUM_BUCKETS],
+    stamps: [u64; SUMMARY_NUM_BUCKETS],
+}
+
+impl RollingState {
+    fn new(cfg: Config) -> Self {
+        Self {
+            buckets: std::array::from_fn(|_| DDSketch::new(cfg)),
+            stamps: [u64::MAX; SUMMARY_NUM_BUCKETS],
+        }
+    }
+}
+
+struct SummaryState {
+    cfg: Config,
+    base: Instant,
+    per_method: Mutex<HashMap<&'static str, RollingState>>,
+}
+
+static LEAFAGE_SUMMARY_STATE: Lazy<SummaryState> = Lazy::new(|| SummaryState {
+    cfg: Config::defaults(),
+    base: Instant::now(),
+    per_method: Mutex::new(HashMap::new()),
+});
+
+#[inline]
+pub(crate) fn leafage_rpc_summary_enabled() -> bool {
+    LEAFAGE_RPC_SUMMARY_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Records one call's latency into the current 20s rolling bucket (summary mode).
+pub(crate) fn record_leafage_rpc_summary(method_name: &'static str, elapsed: Duration) {
+    let st = &*LEAFAGE_SUMMARY_STATE;
+    let window = st.base.elapsed().as_secs() / SUMMARY_WINDOW_SECS;
+    let slot = (window as usize) % SUMMARY_NUM_BUCKETS;
+    let mut per_method = st.per_method.lock().unwrap();
+    let rolling = per_method
+        .entry(method_name)
+        .or_insert_with(|| RollingState::new(st.cfg));
+    if rolling.stamps[slot] != window {
+        rolling.buckets[slot] = DDSketch::new(st.cfg);
+        rolling.stamps[slot] = window;
+    }
+    rolling.buckets[slot].add(elapsed.as_secs_f64());
+}
+
+/// Called once at EN startup: sets the toggle and wires the `before_scrape` hook that
+/// computes the quantile gauges from the rolling window at scrape time.
+pub fn init_leafage_rpc_summary(enabled: bool) {
+    LEAFAGE_RPC_SUMMARY_ENABLED.store(enabled, Ordering::Relaxed);
+    let _ = LEAFAGE_RPC_SUMMARY_COLLECTOR.before_scrape(|| {
+        let st = &*LEAFAGE_SUMMARY_STATE;
+        let now_window = st.base.elapsed().as_secs() / SUMMARY_WINDOW_SECS;
+        let metrics = LeafageRpcTimeSummary::default();
+        let per_method = st.per_method.lock().unwrap();
+        for (method_name, rolling) in per_method.iter() {
+            let mut merged = DDSketch::new(st.cfg);
+            for i in 0..SUMMARY_NUM_BUCKETS {
+                if now_window.saturating_sub(rolling.stamps[i]) < SUMMARY_NUM_BUCKETS as u64 {
+                    merged.merge(&rolling.buckets[i]).ok();
+                }
+            }
+            if merged.count() == 0 {
+                continue;
+            }
+            for (quantile, quantile_label) in SUMMARY_QUANTILES {
+                if let Ok(Some(value)) = merged.quantile(quantile) {
+                    metrics.time[&(*method_name, quantile_label)].set(value);
+                }
+            }
+        }
+        metrics
+    });
+}
 
 #[derive(Debug, Metrics)]
 #[metrics(prefix = "pipeline")]

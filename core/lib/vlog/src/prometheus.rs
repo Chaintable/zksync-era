@@ -22,6 +22,8 @@ enum PrometheusTransport {
 #[derive(Debug, Clone)]
 pub struct PrometheusExporterConfig {
     transport: PrometheusTransport,
+    /// When set, `leafage_rpc_call_time` is emitted as a rolling-summary gauge instead of a histogram.
+    leafage_rpc_summary: bool,
 }
 
 impl PrometheusExporterConfig {
@@ -29,6 +31,7 @@ impl PrometheusExporterConfig {
     pub const fn pull(port: u16) -> Self {
         Self {
             transport: PrometheusTransport::Pull { port },
+            leafage_rpc_summary: false,
         }
     }
 
@@ -39,7 +42,14 @@ impl PrometheusExporterConfig {
                 gateway_uri,
                 interval,
             },
+            leafage_rpc_summary: false,
         }
+    }
+
+    /// Sets whether `leafage_rpc_call_time` is emitted as a rolling-summary gauge.
+    pub fn with_leafage_rpc_summary(mut self, enabled: bool) -> Self {
+        self.leafage_rpc_summary = enabled;
+        self
     }
 
     /// Creates a full push gateway endpoint.
@@ -53,7 +63,17 @@ impl PrometheusExporterConfig {
 
     /// Runs the exporter. This future should be spawned in a separate Tokio task.
     pub async fn run(self, mut stop_receiver: watch::Receiver<bool>) -> anyhow::Result<()> {
-        let registry = MetricsCollection::lazy().collect();
+        // Pick the histogram or the rolling-summary variant of `leafage_rpc_call_time` so that the
+        // same-named metric is registered under exactly one `# TYPE` (registering both panics on
+        // the duplicate name); the dropped group is excluded entirely, descriptor included.
+        let leafage_summary = self.leafage_rpc_summary;
+        let registry = MetricsCollection::lazy()
+            .filter(move |group| match group.name {
+                "LeafageRpcTimeSummary" => leafage_summary,
+                "LeafageRpcTimeHistogram" => !leafage_summary,
+                _ => true,
+            })
+            .collect();
         let metrics_exporter =
             MetricsExporter::new(registry.into()).with_graceful_shutdown(async move {
                 stop_receiver.changed().await.ok();

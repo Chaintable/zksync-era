@@ -15,6 +15,10 @@ pub struct PrometheusConfig {
     /// Push interval to the push gateway.
     #[config(default_t = Duration::from_millis(100))]
     pub push_interval: Duration,
+    /// When set, `leafage_rpc_call_time` is emitted as a rolling-summary gauge instead of a
+    /// histogram (ZKSync EN only). Env: `EN_PROMETHEUS_LEAFAGE_RPC_SUMMARY`.
+    #[config(default)]
+    pub leafage_rpc_summary: bool,
 }
 
 impl PrometheusConfig {
