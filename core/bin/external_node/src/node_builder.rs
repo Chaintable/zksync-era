@@ -168,6 +168,10 @@ impl ExternalNodeBuilder {
     }
 
     fn add_prometheus_exporter_layer(mut self) -> anyhow::Result<Self> {
+        // Toggle the `leafage_rpc_call_time` summary mode once, before the exporter serves scrapes.
+        zksync_node_api_server::web3::init_leafage_rpc_summary(
+            self.config.local.prometheus.leafage_rpc_summary,
+        );
         if let Some(prom_config) = self.config.local.prometheus.to_exporter_config() {
             self.node.add_layer(PrometheusExporterLayer(prom_config));
         } else {

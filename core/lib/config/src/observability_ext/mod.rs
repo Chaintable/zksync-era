@@ -81,10 +81,10 @@ impl PrometheusConfig {
     pub fn to_exporter_config(&self) -> Option<PrometheusExporterConfig> {
         if let Some(base_url) = &self.pushgateway_url {
             let gateway_endpoint = PrometheusExporterConfig::gateway_endpoint(base_url);
-            Some(PrometheusExporterConfig::push(
-                gateway_endpoint,
-                self.push_interval,
-            ))
+            Some(
+                PrometheusExporterConfig::push(gateway_endpoint, self.push_interval)
+                    .with_leafage_rpc_summary(self.leafage_rpc_summary),
+            )
         } else {
             self.to_pull_config()
         }
@@ -92,6 +92,8 @@ impl PrometheusConfig {
 
     /// A version of [`Self::into_exporter_config()`] that only ever creates a pull exporter.
     pub fn to_pull_config(&self) -> Option<PrometheusExporterConfig> {
-        self.listener_port.map(PrometheusExporterConfig::pull)
+        self.listener_port.map(|port| {
+            PrometheusExporterConfig::pull(port).with_leafage_rpc_summary(self.leafage_rpc_summary)
+        })
     }
 }
