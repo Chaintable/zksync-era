@@ -1,57 +1,119 @@
-# Contribution Guidelines
+# Contributing
 
-Hello! Thanks for your interest in joining the mission to accelerate the mass adoption of crypto for personal
-sovereignty! We welcome contributions from anyone on the internet.
+Thanks for your interest in contributing.
 
-Note, however, that all the contributions are subject to review, and not every contribution is guaranteed to be merged.
-It is highly advised to reach out to developers (for example, by creating an issue) before preparing a significant
-change in the codebase, and explicitly confirm that this contribution will be considered for merge. Otherwise, it is
-possible to discover that a feature you have spent some time on does not align with the core team vision or capacity to
-maintain a high quality of given submission long term.
+This repository is a **fork**: upstream [matter-labs/zksync-era](https://github.com/matter-labs/zksync-era)
+plus the [Chaintable pipeline](https://github.com/Chaintable/pipeline) tracer. It
+runs write node(s) that produce block data for the Chaintable data pipeline, for
+the chain(s) listed in this repository's CI configuration and README. It is not
+a general-purpose fork of matter-labs/zksync-era.
 
-## Ways to contribute
+**First, determine where your change belongs:**
 
-There are many ways to contribute to the ZK Stack:
+- **Chain client changes** (consensus, p2p, EVM, RPC, txpool) — contribute
+  **upstream**, following their contributing process. We cannot accept
+  chain-core changes in this fork: they would diverge from upstream and be lost
+  or cause conflicts at the next upstream merge. If an upstream fix matters to
+  this fork, open an issue here linking the upstream PR/commit and we will pull
+  it in with the next sync.
 
-1. Open issues: if you find a bug, have something you believe needs to be fixed, or have an idea for a feature, please
-   open an issue.
-2. Add color to existing issues: provide screenshots, code snippets, and whatever you think would be helpful to resolve
-   issues.
-3. Resolve issues: either by showing an issue isn't a problem and the current state is ok as is or by fixing the problem
-   and opening a PR.
-4. Report security issues, see [our security policy](./SECURITY.md).
-5. [Join the team!](https://matterlabs.notion.site/Shape-the-future-of-Ethereum-at-Matter-Labs-dfb3b5a037044bb3a8006af2eb0575e0)
+- **Pipeline layer changes** — the pipeline tracer and its block-data output,
+  the Dockerfile, published images, CI workflows, or docs about running this
+  write node — contribute **here**, following the process below.
 
-## Fixing issues
+---
 
-To contribute code fixing issues, please fork the repo, fix an issue, commit, add documentation as per the PR template,
-and the repo's maintainers will review the PR.
-[here](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork)
-for guidance how to work with PRs created from a fork.
+## Our Process (contributions to the Chaintable pipeline layer)
 
-## Licenses
+### Getting Started
 
-If you contribute to this project, your contributions will be made to the project under both Apache 2.0 and the MIT
-license.
+Requirements:
 
-## Resources
+* Rust (see `core/Cargo.toml` and `rust-toolchain`)
 
-We aim to make it as easy as possible to contribute to the mission. This is still WIP, and we're happy for contributions
-and suggestions here too. Some resources to help:
+### Development Workflow
 
-1. [In-repo docs aimed at developers](docs)
-2. [ZKsync Era docs!](https://docs.zksync.io)
-3. Company links can be found in the [repositories' readme](README.md)
+1. Fork the repository
+2. Create a branch from `main`
+3. Make changes, focused on the pipeline layer
+4. Run local checks
+5. Open a PR
 
-## Code of Conduct
+Keep PRs small and focused.
 
-Be polite and respectful.
+### Local Checks (must pass)
 
-## FAQ
+```bash
+cd core
+cargo build
+cargo test
+```
 
-**Q**: I have a small contribution that's not getting traction/being merged?
+### Code Guidelines
 
-**A**: Due to capacity, contributions that are simple renames of variables or stylistic/minor text improvements, one-off
-typo fix will not be merged.
+* Keep the diff minimal — prefer hooks over invasive edits to client code
+* Match the existing code style and conventions (`gofmt`)
+* Prefer simple and explicit logic
+* Do not change chain-core behavior (see the top of this document)
 
-### Thank you
+### Testing
+
+Changes to the pipeline layer must include tests where practical. At minimum,
+describe how you verified the emitted data: chain, block range, and what you
+compared it against.
+
+### Pull Requests
+
+Before submitting:
+
+* Local checks pass
+* Tests added or updated
+* Behavior changes clearly explained
+
+PRs should include:
+
+* Summary
+* Motivation
+* Testing details
+* Compatibility impact
+
+Note on CI: it builds the Docker images for this repository, and the image
+publishing steps need repository credentials, which GitHub does not provide to
+pull requests from forks — those steps failing on a fork PR is expected. A
+maintainer will build and verify your change on an internal branch.
+
+### Commit Guidelines
+
+* Use clear, descriptive messages
+
+Example:
+
+```
+tracer: fix state-diff ordering for reorged blocks
+```
+
+### Releases
+
+* Release tags follow `v<base-version>-ct.N` (`ct` = Chaintable; e.g.
+  `v31.0.0-ct.3`); a GitHub Release publishes the versioned images
+
+### Reporting Issues
+
+Please include:
+
+* Image tag or commit
+* Chain and block height
+* Reproduction steps
+* Expected vs actual behavior
+
+### Security
+
+Do not disclose vulnerabilities publicly.
+
+See [SECURITY.md](./SECURITY.md) for reporting instructions.
+
+### License
+
+By contributing, you agree that your contributions are licensed under the same
+terms as this repository — see [LICENSE-APACHE](./LICENSE-APACHE) and
+[LICENSE-MIT](./LICENSE-MIT).
