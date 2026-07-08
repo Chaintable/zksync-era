@@ -37,7 +37,6 @@ fn observe_leafage_call<T>(
     result: Result<T, ErrorObjectOwned>,
 ) -> RpcResult<T> {
     let elapsed = started_at.elapsed();
-    LEAFAGE_RPC_METRICS.time_count[&MethodNameLabel { method_name }].inc();
     LEAFAGE_RPC_METRICS.time[&MethodNameLabel { method_name }].observe(elapsed);
     let return_code = result
         .as_ref()

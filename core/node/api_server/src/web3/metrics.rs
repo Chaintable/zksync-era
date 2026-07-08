@@ -504,7 +504,8 @@ pub(crate) struct LeafageStatusLabels {
 #[metrics(prefix = "leafage_rpc_call")]
 pub(crate) struct LeafageRpcMetrics {
     pub status: Family<LeafageStatusLabels, Counter>,
-    pub time_count: Family<MethodNameLabel, Counter>,
+    // The number of calls is exposed via the `leafage_rpc_call_time_count` series that the `time`
+    // histogram emits automatically; a separate counter would collide with it on the same series.
     #[metrics(buckets = Buckets::LATENCIES)]
     pub time: Family<MethodNameLabel, Histogram<Duration>>,
 }
