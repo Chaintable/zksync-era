@@ -10,6 +10,10 @@ on:
   push:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: public.ecr.aws/b2h7a5c4/chaintable
   IMAGE: zksync-era
@@ -21,8 +25,12 @@ jobs:
   build-artifacts:
     strategy:
       matrix:
-        arch: [amd64, arm64]
-    runs-on: [self-hosted, "${{ matrix.arch }}"]
+        include:
+          - runner: ubuntu2404-linux-x86-64-16c
+            arch: amd64
+          - runner: ubuntu2204-arm64-16c
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       id-token: write
@@ -66,7 +74,7 @@ jobs:
           docker push ${REGISTRY}/${IMAGE}:${{ matrix.arch }}-${REVISION}
 
   merge-docker-manifest:
-    runs-on: [self-hosted, general]
+    runs-on: ubuntu2404-linux-x86-64-16c
     needs: build-artifacts
     permissions:
       contents: read
