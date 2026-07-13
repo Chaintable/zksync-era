@@ -14,7 +14,10 @@ use std::fmt;
 
 use zksync_config::configs::chain::SealCriteriaConfig;
 use zksync_multivm::{
-    interface::{DeduplicatedWritesMetrics, Halt, TransactionExecutionMetrics, VmExecutionMetrics},
+    interface::{
+        DeduplicatedWritesMetrics, FeatureVector, Halt, TransactionExecutionMetrics,
+        VmExecutionMetrics,
+    },
     vm_latest::TransactionVmExt,
 };
 use zksync_types::{ProtocolVersionId, Transaction};
@@ -166,6 +169,9 @@ pub struct SealData {
     pub(super) cumulative_size: usize,
     pub(super) writes_metrics: DeduplicatedWritesMetrics,
     pub(super) gas_remaining: u32,
+    /// Airbender cycle-estimator features — per-transaction in `tx_data`, accumulated
+    /// over the pending batch in `block_data`.
+    pub(super) cycle_features: FeatureVector,
 }
 
 impl SealData {
@@ -180,6 +186,9 @@ impl SealData {
             cumulative_size: transaction.bootloader_encoding_size(),
             writes_metrics: tx_metrics.writes,
             gas_remaining: tx_metrics.gas_remaining,
+            // The single-tx API/mempool filter has no traced features; the batch seal
+            // path fills this from the VM statistics.
+            cycle_features: FeatureVector::default(),
         }
     }
 }
