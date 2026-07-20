@@ -239,13 +239,20 @@ const SMALL_COUNT_BUCKETS: Buckets = Buckets::values(&[
 
 const RESPONSE_SIZE_BUCKETS: Buckets = Buckets::exponential(1.0..=1_048_576.0, 4.0);
 
+/// Latency buckets mirroring those of the proxy fronting the HTTP server. Sharing bucket edges lets
+/// bucket counts be compared against the proxy's at a given `le` without interpolation artifacts,
+/// which `Buckets::LATENCIES` (coarse between 0.25s and 5s) does not allow.
+const PROXY_ALIGNED_LATENCIES: Buckets = Buckets::values(&[
+    0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+]);
+
 /// General-purpose API server metrics.
 #[derive(Debug, Metrics)]
 #[metrics(prefix = "api")]
 pub(crate) struct ApiMetrics {
     /// Latency of a Web3 call. Calls that take block ID as an input have block ID and block diff
     /// labels (the latter is the difference between the latest sealed L2 block and the resolved L2 block).
-    #[metrics(buckets = Buckets::LATENCIES)]
+    #[metrics(buckets = PROXY_ALIGNED_LATENCIES)]
     web3_call: Family<MethodLabels, Histogram<Duration>>,
     #[metrics(buckets = Buckets::LATENCIES, unit = Unit::Seconds)]
     web3_dropped_call_latency: Family<MethodLabels, Histogram<Duration>>,
@@ -510,7 +517,7 @@ pub(crate) struct LeafageRpcMetrics {
     pub status: Family<LeafageStatusLabels, Counter>,
     // The number of calls is exposed via the `leafage_rpc_call_time_count` series that the `time`
     // histogram emits automatically; a separate counter would collide with it on the same series.
-    #[metrics(buckets = Buckets::LATENCIES)]
+    #[metrics(buckets = PROXY_ALIGNED_LATENCIES)]
     pub time: Family<MethodNameLabel, Histogram<Duration>>,
 }
 
