@@ -510,7 +510,14 @@ pub(crate) struct LeafageRpcMetrics {
     pub status: Family<LeafageStatusLabels, Counter>,
     // The number of calls is exposed via the `leafage_rpc_call_time_count` series that the `time`
     // histogram emits automatically; a separate counter would collide with it on the same series.
-    #[metrics(buckets = Buckets::LATENCIES)]
+    //
+    // Buckets mirror the fronting proxy's so that bucket counts can be compared at shared `le`
+    // edges without interpolation artifacts, plus the 30s/120s edges that the proxy (capped at
+    // 10s) cannot resolve.
+    #[metrics(buckets = Buckets::values(&[
+        0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
+        120.0,
+    ]))]
     pub time: Family<MethodNameLabel, Histogram<Duration>>,
 }
 
