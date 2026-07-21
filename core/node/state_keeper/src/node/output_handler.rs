@@ -53,6 +53,9 @@ pub struct OutputHandlerLayer {
     debank_version: Option<String>,
     /// When true, the Debank handler only uploads to S3 and skips Kafka notifications.
     debank_is_backup: bool,
+    /// Whether the predicted Airbender cycle count is persisted when an L1 batch is sealed.
+    /// Should only be set on the main node; external nodes merely replay batches.
+    predicted_cycles_persistence_enabled: bool,
 }
 
 #[derive(Debug, FromContext)]
@@ -81,6 +84,7 @@ impl OutputHandlerLayer {
             debank_kafka_topic: None,
             debank_version: None,
             debank_is_backup: false,
+            predicted_cycles_persistence_enabled: false,
         }
     }
 
@@ -120,6 +124,14 @@ impl OutputHandlerLayer {
 
     pub fn with_debank_is_backup(mut self, is_backup: bool) -> Self {
         self.debank_is_backup = is_backup;
+        self
+    }
+
+    pub fn with_predicted_cycles_persistence_enabled(
+        mut self,
+        predicted_cycles_persistence_enabled: bool,
+    ) -> Self {
+        self.predicted_cycles_persistence_enabled = predicted_cycles_persistence_enabled;
         self
     }
 }
@@ -163,6 +175,9 @@ impl WiringLayer for OutputHandlerLayer {
         }
         if !self.protective_reads_persistence_enabled {
             persistence = persistence.without_protective_reads();
+        }
+        if self.predicted_cycles_persistence_enabled {
+            persistence = persistence.with_predicted_cycles_persistence();
         }
 
         let tree_writes_persistence = TreeWritesPersistence::new(persistence_pool);

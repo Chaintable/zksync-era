@@ -1041,6 +1041,8 @@ pub struct Proof {
 pub enum AirbenderProofStatus {
     PickedByProver,
     Generated,
+    PickedForSnark,
+    SnarkGenerated,
     Failed,
 }
 
@@ -1051,6 +1053,8 @@ impl TryFrom<String> for AirbenderProofStatus {
         match s.as_str() {
             "picked_by_prover" => Ok(Self::PickedByProver),
             "generated" => Ok(Self::Generated),
+            "picked_for_snark" => Ok(Self::PickedForSnark),
+            "snark_generated" => Ok(Self::SnarkGenerated),
             "failed" => Ok(Self::Failed),
             other => Err(format!("Unknown airbender proof status: {other}")),
         }
