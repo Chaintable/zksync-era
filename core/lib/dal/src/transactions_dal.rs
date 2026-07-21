@@ -163,6 +163,7 @@ impl TransactionsDal<'_, '_> {
         Ok(())
     }
 
+    /// Get L1 transaction hashes by their priority op ids, inclusive.
     pub async fn get_l1_transactions_hashes(
         &mut self,
         start_id: usize,
@@ -293,7 +294,7 @@ impl TransactionsDal<'_, '_> {
         let is_duplicate = sqlx::query!(
             r#"
             SELECT
-                TRUE
+                TRUE AS "is_duplicate"
             FROM
                 transactions
             WHERE
