@@ -15568,7 +15568,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_s3_backfill"
-version = "29.17.0-non-semver-compat"
+version = "31.3.0-non-semver-compat"
 dependencies = [
  "anyhow",
  "aws-config",

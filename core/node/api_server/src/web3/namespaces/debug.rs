@@ -1,5 +1,5 @@
 use anyhow::Context as _;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
 use std::time::Instant;
 use tokio::runtime::Handle;
@@ -844,13 +844,13 @@ impl DebugNamespace {
                 };
                 (addr, account)
             })
-            .collect::<HashMap<_, _>>();
+            .collect::<BTreeMap<_, _>>();
 
         StateOverride::new(accounts)
     }
 
     fn merge_state_overrides(acc: StateOverride, next: StateOverride) -> StateOverride {
-        let mut map: HashMap<Address, OverrideAccount> = acc.into_iter().collect();
+        let mut map: BTreeMap<Address, OverrideAccount> = acc.into_iter().collect();
         for (addr, mut next_acc) in next.into_iter() {
             let mut merged = map.remove(&addr).unwrap_or_else(OverrideAccount::default);
             if let Some(balance) = next_acc.balance.take() {
