@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use anyhow::anyhow;
 use anyhow::Context as _;
@@ -569,7 +569,7 @@ impl EthNamespace {
             return Ok(None);
         }
 
-        Ok(Some(StateOverride::new(HashMap::from([(
+        Ok(Some(StateOverride::new(BTreeMap::from([(
             from,
             OverrideAccount {
                 balance: Some(value),
