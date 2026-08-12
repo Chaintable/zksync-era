@@ -390,7 +390,7 @@ impl DebankS3OutputHandler {
                     // Push root trace
                     let root_trace =
                         debank::to_debank_trace(&first_call, tx_hash, vec![]);
-                    if first_call.revert_reason.is_some() || first_call.parent_failed {
+                    if debank::effective_failed(&first_call) {
                         all_error_traces.push(root_trace);
                     } else {
                         all_traces.push(root_trace);
