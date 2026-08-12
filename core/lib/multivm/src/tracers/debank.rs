@@ -6,6 +6,8 @@ use zksync_types::{
 };
 use zksync_vm_interface::{Call, CallType};
 
+const PARENT_CALL_FAILED_ERROR: &str = "parent call failed";
+
 pub fn to_hash(args: &[&str]) -> String {
     let mut hasher = Md5::new();
     for arg in args {
@@ -71,7 +73,7 @@ pub fn add_trace_log(
         }
     }
     for (i, subcall) in cf.calls.iter().enumerate() {
-        if subcall.revert_reason.is_some() {
+        if subcall.revert_reason.is_some() || subcall.parent_failed {
             outerrtraces.push(to_debank_trace(
                 &subcall,
                 tx_hash,
@@ -117,7 +119,15 @@ pub fn to_debank_trace(call: &Call, tx_hash: H256, trace_addresses: Vec<u32>) ->
         storage_change: call.storage_change,
         subtraces: call.calls.len() as u32,
         trace_address: trace_addresses,
-        error: call.revert_reason.clone().unwrap_or_default(),
+        error: trace_error(call),
+    }
+}
+
+fn trace_error(call: &Call) -> String {
+    match &call.revert_reason {
+        Some(error) => error.clone(),
+        None if call.parent_failed => PARENT_CALL_FAILED_ERROR.to_owned(),
+        None => String::new(),
     }
 }
 
