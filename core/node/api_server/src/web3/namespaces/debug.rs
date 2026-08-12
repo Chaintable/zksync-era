@@ -1242,6 +1242,8 @@ impl DebugNamespace {
                         subcall.pos_in_parent_trace = idx as u32;
                     }
 
+                    debank::set_parent_failed(&mut first_call, false);
+
                     let mut traces = vec![debank::to_debank_trace(
                         &first_call,
                         transaction_hash,
@@ -1745,7 +1747,15 @@ impl DebugNamespace {
                     for (i, subcall) in first_call.calls.iter_mut().enumerate() {
                         subcall.pos_in_parent_trace = i as u32;
                     }
-                    debank_traces.push(debank::to_debank_trace(&first_call, l2_tx.hash(), vec![]));
+
+                    debank::set_parent_failed(&mut first_call, false);
+                    let root_trace =
+                        debank::to_debank_trace(&first_call, l2_tx.hash(), vec![]);
+                    if debank::effective_failed(&first_call) {
+                        debank_errtraces.push(root_trace);
+                    } else {
+                        debank_traces.push(root_trace);
+                    }
 
                     debank::add_trace_log(
                         l2_tx.hash(),
