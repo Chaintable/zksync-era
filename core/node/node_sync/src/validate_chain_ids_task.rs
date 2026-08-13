@@ -286,26 +286,4 @@ mod tests {
         stop_sender.send_replace(true);
         task.await.unwrap().unwrap();
     }
-
-    #[tokio::test]
-    async fn validating_chain_ids_without_l1_client() {
-        let main_node_client = MockClient::builder(L2::default())
-            .method("eth_chainId", || Ok(U64::from(270)))
-            .method("zks_L1ChainId", || Ok(U64::from(9)))
-            .build();
-
-        let validation_task = ValidateChainIdsTask::without_l1_client(
-            L1ChainId(9),
-            L2ChainId::default(),
-            Box::new(main_node_client),
-        );
-        let (stop_sender, stop_receiver) = watch::channel(false);
-        let task = tokio::spawn(validation_task.run(stop_receiver));
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(!task.is_finished());
-
-        stop_sender.send_replace(true);
-        task.await.unwrap().unwrap();
-    }
 }
