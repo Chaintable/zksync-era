@@ -147,7 +147,7 @@ pub struct Input {
     #[context(default)]
     bridge_addresses: BridgeAddressesHandle,
     main_node_client: Option<Box<DynClient<L2>>>,
-    l1_client: Box<DynClient<L1>>,
+    l1_client: Option<Box<DynClient<L1>>>,
     l1_contracts: L1ChainContractsResource,
 }
 
@@ -179,10 +179,13 @@ impl WiringLayer for BridgeAddressesUpdaterLayer {
                 update_interval: self.refresh_interval,
             })
         } else {
+            let l1_client = input
+                .l1_client
+                .context("L1 client is required when the main node client is not available")?;
             let l1_contracts = &input.l1_contracts.0.ecosystem_contracts;
             BridgeAddressesUpdaterTask::L1Updater(L1Updater {
                 bridge_addresses: input.bridge_addresses,
-                l1_eth_client: Box::new(input.l1_client),
+                l1_eth_client: Box::new(l1_client),
                 bridgehub_addr: l1_contracts
                     .bridgehub_proxy_addr
                     .context("Lacking l1 bridgehub proxy address")?,
@@ -192,5 +195,69 @@ impl WiringLayer for BridgeAddressesUpdaterLayer {
             })
         };
         Ok(Output { updater_task })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zksync_config::configs::contracts::{
+        chain::ChainContracts, ecosystem::EcosystemCommonContracts,
+        SettlementLayerSpecificContracts,
+    };
+    use zksync_web3_decl::client::MockClient;
+
+    use super::*;
+
+    fn l1_contracts() -> L1ChainContractsResource {
+        L1ChainContractsResource(SettlementLayerSpecificContracts {
+            ecosystem_contracts: EcosystemCommonContracts {
+                bridgehub_proxy_addr: Some(Address::repeat_byte(1)),
+                state_transition_proxy_addr: None,
+                message_root_proxy_addr: None,
+                multicall3: None,
+                validator_timelock_addr: None,
+            },
+            chain_contracts_config: ChainContracts {
+                diamond_proxy_addr: Address::repeat_byte(2),
+            },
+        })
+    }
+
+    #[tokio::test]
+    async fn main_node_updater_does_not_require_l1_client() {
+        let main_node_client = MockClient::builder(L2::default()).build();
+        let output = BridgeAddressesUpdaterLayer {
+            refresh_interval: Duration::from_secs(1),
+        }
+        .wire(Input {
+            bridge_addresses: BridgeAddressesHandle::default(),
+            main_node_client: Some(Box::new(main_node_client)),
+            l1_client: None,
+            l1_contracts: l1_contracts(),
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            output.updater_task,
+            BridgeAddressesUpdaterTask::MainNodeUpdater(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn l1_updater_requires_l1_client() {
+        let err = BridgeAddressesUpdaterLayer {
+            refresh_interval: Duration::from_secs(1),
+        }
+        .wire(Input {
+            bridge_addresses: BridgeAddressesHandle::default(),
+            main_node_client: None,
+            l1_client: None,
+            l1_contracts: l1_contracts(),
+        })
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("L1 client is required"), "{err}");
     }
 }

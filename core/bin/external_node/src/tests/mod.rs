@@ -9,7 +9,7 @@ use zksync_dal::ConnectionPool;
 use zksync_health_check::HealthStatus;
 use zksync_types::{fee_model::FeeParams, L1BatchNumber, U64};
 
-use self::framework::inject_test_layers;
+use self::framework::{inject_test_layers, inject_test_layers_without_l1};
 use super::*;
 
 mod framework;
@@ -82,6 +82,49 @@ async fn external_node_basics(components_str: &'static str) {
         let component_health = &health_data.components()[name];
         assert_matches!(component_health.status(), HealthStatus::ShutDown);
     }
+}
+
+#[tokio::test]
+async fn rpc_mode_starts_without_l1_client() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let connection_pool = ConnectionPool::test_pool().await;
+    let _guard = zksync_vlog::ObservabilityBuilder::new().try_build().ok();
+    let (mut env, env_handles) =
+        utils::TestEnvironment::with_genesis_block(&temp_dir, &connection_pool, "http_api").await;
+    env.config.local.secrets.l1.l1_rpc_url = None;
+
+    let l2_client = utils::mock_l2_client(&env);
+    let node_handle = utils::spawn_node(move || {
+        let mut node = ExternalNodeBuilder::new(env.config)?.with_mode(RunMode::Rpc);
+        inject_test_layers_without_l1(
+            &mut node,
+            env.sigint_receiver,
+            env.app_health_sender,
+            l2_client,
+        );
+
+        let node = node.build(env.components.0.into_iter().collect())?;
+        node.run(())?;
+        Ok(())
+    });
+
+    let app_health = env_handles.app_health_receiver.await.unwrap();
+    loop {
+        let health_data = app_health.check_health().await;
+        if matches!(health_data.inner().status(), HealthStatus::Ready)
+            && health_data.components().contains_key("http_api")
+        {
+            break;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+
+    env_handles.sigint_sender.send(()).unwrap();
+    tokio::time::timeout(SHUTDOWN_TIMEOUT, node_handle)
+        .await
+        .expect("RPC node hanged up during shutdown")
+        .expect("RPC node panicked")
+        .expect("RPC node errored");
 }
 
 #[tokio::test]

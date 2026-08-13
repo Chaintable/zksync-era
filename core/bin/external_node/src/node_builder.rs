@@ -50,7 +50,7 @@ use zksync_node_sync::node::{
     ValidateChainIdsLayer,
 };
 use zksync_reorg_detector::node::ReorgDetectorLayer;
-use zksync_settlement_layer_data::{ENConfig, SettlementLayerData};
+use zksync_settlement_layer_data::{ENConfig, RpcSettlementLayerData, SettlementLayerData};
 use zksync_state::RocksdbStorageOptions;
 use zksync_state_keeper::node::{MainBatchExecutorLayer, OutputHandlerLayer, StateKeeperLayer};
 use zksync_types::L1BatchNumber;
@@ -320,7 +320,12 @@ impl ExternalNodeBuilder {
 
     fn add_validate_chain_ids_layer(mut self) -> anyhow::Result<Self> {
         let config = &self.config.local.networks;
-        let layer = ValidateChainIdsLayer::new(config.l1_chain_id, config.l2_chain_id);
+        let layer = match self.mode {
+            RunMode::Full => ValidateChainIdsLayer::new(config.l1_chain_id, config.l2_chain_id),
+            RunMode::Rpc => {
+                ValidateChainIdsLayer::without_l1_client(config.l1_chain_id, config.l2_chain_id)
+            }
+        };
         self.node.add_layer(layer);
         Ok(self)
     }
@@ -614,6 +619,15 @@ impl ExternalNodeBuilder {
         Ok(self)
     }
 
+    fn add_rpc_settlement_layer_data(mut self) -> anyhow::Result<Self> {
+        let networks = &self.config.local.networks;
+        self.node.add_layer(RpcSettlementLayerData::new(
+            networks.l1_chain_id,
+            networks.gateway_chain_id,
+        ));
+        Ok(self)
+    }
+
     fn add_tx_sender_layer(mut self) -> anyhow::Result<Self> {
         let config = &self.config.local.api.web3_json_rpc;
         let postgres_storage_config = PostgresStorageCachesConfig {
@@ -693,10 +707,14 @@ impl ExternalNodeBuilder {
             .add_healthcheck_layer()?
             .add_prometheus_exporter_layer()?
             .add_pools_layer()?
-            .add_main_node_client_layer()?
-            .add_query_eth_client_layer()?
-            .add_settlement_layer_data()?
-            .add_validate_chain_ids_layer()?;
+            .add_main_node_client_layer()?;
+        self = match self.mode {
+            RunMode::Full => self
+                .add_query_eth_client_layer()?
+                .add_settlement_layer_data()?,
+            RunMode::Rpc => self.add_rpc_settlement_layer_data()?,
+        };
+        self = self.add_validate_chain_ids_layer()?;
 
         // In rpc mode, we keep RocksDB cache updated from Postgres since there is no local re-execution.
         if self.mode == RunMode::Rpc {
