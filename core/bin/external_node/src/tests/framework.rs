@@ -22,6 +22,26 @@ pub(super) fn inject_test_layers(
     l1_client: MockClient<L1>,
     l2_client: MockClient<L2>,
 ) {
+    inject_common_test_layers(node, sigint_receiver, app_health_sender, l2_client);
+    node.node.add_layer(MockL1ClientLayer { client: l1_client });
+}
+
+pub(super) fn inject_test_layers_without_l1(
+    node: &mut ExternalNodeBuilder,
+    sigint_receiver: oneshot::Receiver<()>,
+    app_health_sender: oneshot::Sender<Arc<AppHealthCheck>>,
+    l2_client: MockClient<L2>,
+) {
+    inject_common_test_layers(node, sigint_receiver, app_health_sender, l2_client);
+    node.node.add_layer(NoopRpcRocksdbCacheLayer);
+}
+
+fn inject_common_test_layers(
+    node: &mut ExternalNodeBuilder,
+    sigint_receiver: oneshot::Receiver<()>,
+    app_health_sender: oneshot::Sender<Arc<AppHealthCheck>>,
+    l2_client: MockClient<L2>,
+) {
     node.node
         .add_layer(MockL2ClientLayer { client: l2_client })
         .add_layer(TestSigintLayer {
@@ -29,10 +49,26 @@ pub(super) fn inject_test_layers(
         })
         .add_layer(AppHealthHijackLayer {
             sender: app_health_sender,
-        })
-        .add_layer(MockL1ClientLayer {
-            client: l1_client.clone(),
         });
+}
+
+/// The RPC RocksDB updater has an existing slow-shutdown issue that is unrelated to L1 wiring.
+/// Replace it so that the L1-independence test can shut down without waiting for the task timeout.
+#[derive(Debug)]
+struct NoopRpcRocksdbCacheLayer;
+
+#[async_trait::async_trait]
+impl WiringLayer for NoopRpcRocksdbCacheLayer {
+    type Input = ();
+    type Output = ();
+
+    fn layer_name(&self) -> &'static str {
+        "state_keeper_rocksdb_cache_layer"
+    }
+
+    async fn wire(self, (): Self::Input) -> Result<Self::Output, WiringError> {
+        Ok(())
+    }
 }
 
 /// A test layer that would stop the node upon request.

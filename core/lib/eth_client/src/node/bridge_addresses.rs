@@ -147,7 +147,7 @@ pub struct Input {
     #[context(default)]
     bridge_addresses: BridgeAddressesHandle,
     main_node_client: Option<Box<DynClient<L2>>>,
-    l1_client: Box<DynClient<L1>>,
+    l1_client: Option<Box<DynClient<L1>>>,
     l1_contracts: L1ChainContractsResource,
 }
 
@@ -179,10 +179,13 @@ impl WiringLayer for BridgeAddressesUpdaterLayer {
                 update_interval: self.refresh_interval,
             })
         } else {
+            let l1_client = input
+                .l1_client
+                .context("L1 client is required when the main node client is not available")?;
             let l1_contracts = &input.l1_contracts.0.ecosystem_contracts;
             BridgeAddressesUpdaterTask::L1Updater(L1Updater {
                 bridge_addresses: input.bridge_addresses,
-                l1_eth_client: Box::new(input.l1_client),
+                l1_eth_client: Box::new(l1_client),
                 bridgehub_addr: l1_contracts
                     .bridgehub_proxy_addr
                     .context("Lacking l1 bridgehub proxy address")?,

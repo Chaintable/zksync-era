@@ -4,7 +4,7 @@ mod node;
 pub mod remote_en_config;
 
 use anyhow::Context;
-pub use node::{ENConfig, MainNodeConfig, SettlementLayerData};
+pub use node::{ENConfig, MainNodeConfig, RpcSettlementLayerData, SettlementLayerData};
 use zksync_basic_types::{
     ethabi::Contract,
     pubdata_da::PubdataSendingMode,

@@ -1,3 +1,4 @@
+use anyhow::Context as _;
 use zksync_node_framework::{
     service::StopReceiver,
     task::{Task, TaskId, TaskKind},
@@ -10,13 +11,13 @@ use zksync_web3_decl::client::{DynClient, L1, L2};
 use crate::validate_chain_ids_task::ValidateChainIdsTask;
 
 /// Wiring layer for chain ID validation precondition for external node.
-/// Ensures that chain IDs are consistent locally, on main node, and on the settlement layer.
+/// Ensures that chain IDs are consistent locally and on the main node. It can additionally check
+/// the settlement layer client when constructed with [`Self::new`].
 ///
 /// ## Requests resources
 ///
-/// - `EthInterfaceResource`
-/// - `GatewayEthInterfaceResource`
 /// - `MainNodeClientResource`
+/// - `EthInterfaceResource` (only when constructed with [`Self::new`])
 ///
 /// ## Adds preconditions
 ///
@@ -25,11 +26,12 @@ use crate::validate_chain_ids_task::ValidateChainIdsTask;
 pub struct ValidateChainIdsLayer {
     l1_chain_id: L1ChainId,
     l2_chain_id: L2ChainId,
+    require_l1_client: bool,
 }
 
 #[derive(Debug, FromContext)]
 pub struct Input {
-    l1_client: Box<DynClient<L1>>,
+    l1_client: Option<Box<DynClient<L1>>>,
     main_node_client: Box<DynClient<L2>>,
 }
 
@@ -44,6 +46,15 @@ impl ValidateChainIdsLayer {
         Self {
             l1_chain_id,
             l2_chain_id,
+            require_l1_client: true,
+        }
+    }
+
+    pub fn without_l1_client(l1_chain_id: L1ChainId, l2_chain_id: L2ChainId) -> Self {
+        Self {
+            l1_chain_id,
+            l2_chain_id,
+            require_l1_client: false,
         }
     }
 }
@@ -58,12 +69,22 @@ impl WiringLayer for ValidateChainIdsLayer {
     }
 
     async fn wire(self, input: Self::Input) -> Result<Self::Output, WiringError> {
-        let task = ValidateChainIdsTask::new(
-            self.l1_chain_id,
-            self.l2_chain_id,
-            input.l1_client,
-            input.main_node_client,
-        );
+        let task = if self.require_l1_client {
+            ValidateChainIdsTask::new(
+                self.l1_chain_id,
+                self.l2_chain_id,
+                input
+                    .l1_client
+                    .context("L1 client is required for chain ID validation")?,
+                input.main_node_client,
+            )
+        } else {
+            ValidateChainIdsTask::without_l1_client(
+                self.l1_chain_id,
+                self.l2_chain_id,
+                input.main_node_client,
+            )
+        };
         Ok(Output { task })
     }
 }

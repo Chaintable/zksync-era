@@ -12,12 +12,12 @@ use zksync_web3_decl::{
     namespaces::{EthNamespaceClient, ZksNamespaceClient},
 };
 
-/// Task that validates chain IDs using main node and Ethereum clients.
+/// Task that validates chain IDs using the main node and, if configured, an L1 client.
 #[derive(Debug)]
 pub struct ValidateChainIdsTask {
     l1_chain_id: L1ChainId,
     l2_chain_id: L2ChainId,
-    l1_client: Box<DynClient<L1>>,
+    l1_client: Option<Box<DynClient<L1>>>,
     main_node_client: Box<DynClient<L2>>,
 }
 
@@ -33,12 +33,31 @@ impl ValidateChainIdsTask {
         Self {
             l1_chain_id,
             l2_chain_id,
-            l1_client: l1_client.for_component("chain_ids_validation"),
+            l1_client: Some(l1_client.for_component("chain_ids_validation")),
             main_node_client: main_node_client.for_component("chain_ids_validation"),
         }
     }
 
-    async fn check_client(client: Box<DynClient<L1>>, expected: SLChainId) -> anyhow::Result<()> {
+    pub fn without_l1_client(
+        l1_chain_id: L1ChainId,
+        l2_chain_id: L2ChainId,
+        main_node_client: Box<DynClient<L2>>,
+    ) -> Self {
+        Self {
+            l1_chain_id,
+            l2_chain_id,
+            l1_client: None,
+            main_node_client: main_node_client.for_component("chain_ids_validation"),
+        }
+    }
+
+    async fn check_client(
+        client: Option<Box<DynClient<L1>>>,
+        expected: SLChainId,
+    ) -> anyhow::Result<()> {
+        let Some(client) = client else {
+            return Ok(());
+        };
         loop {
             match client.fetch_chain_id().await {
                 Ok(chain_id) => {

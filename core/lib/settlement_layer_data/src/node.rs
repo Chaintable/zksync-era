@@ -3,18 +3,21 @@ use zksync_basic_types::{
     commitment::{L1BatchCommitmentMode, L2DACommitmentScheme},
     settlement::{SettlementLayer, WorkingSettlementLayer},
     url::SensitiveUrl,
-    Address, L2ChainId,
+    Address, L1ChainId, L2ChainId, SLChainId,
 };
-use zksync_config::configs::{
-    contracts::{
-        chain::L2Contracts, ecosystem::L1SpecificContracts, SettlementLayerSpecificContracts,
+use zksync_config::{
+    configs::{
+        contracts::{
+            chain::L2Contracts, ecosystem::L1SpecificContracts, SettlementLayerSpecificContracts,
+        },
+        eth_sender::SenderConfig,
     },
-    eth_sender::SenderConfig,
+    RemoteENConfig,
 };
 use zksync_contracts::getters_facet_contract;
 use zksync_dal::{
     node::{MasterPool, PoolResource},
-    CoreDal,
+    Connection, Core, CoreDal,
 };
 use zksync_eth_client::{
     contracts_loader::{
@@ -43,6 +46,33 @@ use crate::{
     adjust_eth_sender_config, current_settlement_layer, get_db_settlement_mode, get_l2_client,
     remote_en_config::fetch_remote_en_config,
 };
+
+async fn load_remote_en_config(
+    connection: &mut Connection<'_, Core>,
+    main_node_client: Box<DynClient<L2>>,
+) -> anyhow::Result<RemoteENConfig> {
+    match fetch_remote_en_config(main_node_client).await {
+        Ok(config) => {
+            connection
+                .external_node_config_dal()
+                .save_config(&config)
+                .await
+                .context("failed to save remote config")?;
+            Ok(config)
+        }
+        Err(err) => {
+            tracing::error!("Failed to fetch remote config: {err}\nUsing the cached config");
+            connection
+                .external_node_config_dal()
+                .get_en_remote_config()
+                .await
+                .context("failed to get remote config")?
+                .context(
+                    "remote config is not set in the database; the main node must be available on the first run",
+                )
+        }
+    }
+}
 
 pub struct MainNodeConfig {
     pub l1_specific_contracts: L1SpecificContracts,
@@ -307,36 +337,13 @@ impl WiringLayer for SettlementLayerData<ENConfig> {
             .await
             .context("failed getting pool connection")?;
         let initial_db_sl_mode = get_db_settlement_mode(&mut connection, chain_id).await?;
-        let remote_config = fetch_remote_en_config(
+        let remote_config = load_remote_en_config(
+            &mut connection,
             input
                 .main_node_client
                 .expect("Main node client is required for EN"),
         )
-        .await;
-
-        let remote_config = match remote_config {
-            Ok(config) => {
-                connection
-                    .external_node_config_dal()
-                    .save_config(&config)
-                    .await
-                    .context("failed to save remote config")?;
-                config
-            }
-            Err(err) => {
-                tracing::error!(
-                    "Failed to fetch remote config: {} \n Using the cached config",
-                    err
-                );
-                connection
-                        .external_node_config_dal()
-                        .get_en_remote_config()
-                        .await
-                        .context("failed to get remote config")?
-                        .context("remote config is not set in the database, \
-                        most likely it's your first run and main node should be available for this time")?
-            }
-        };
+        .await?;
 
         let initial_sl_mode = if let Some(mode) = initial_db_sl_mode {
             mode
@@ -412,6 +419,113 @@ impl WiringLayer for SettlementLayerData<ENConfig> {
             eth_sender_config: None,
             pubdata_sending_mode: None,
             zk_chain_on_chain_config: None,
+            l1_batch_commit_data_generator_mode: L1BatchCommitmentModeResource(
+                remote_config.l1_batch_commit_data_generator_mode,
+            ),
+        })
+    }
+}
+
+/// Settlement layer data required by the API-only RPC mode.
+///
+/// Unlike [`SettlementLayerData<ENConfig>`], this layer obtains the settlement mode from Postgres
+/// and does not require a settlement layer client.
+#[derive(Debug)]
+pub struct RpcSettlementLayerData {
+    l1_chain_id: L1ChainId,
+    gateway_chain_id: Option<SLChainId>,
+}
+
+impl RpcSettlementLayerData {
+    pub fn new(l1_chain_id: L1ChainId, gateway_chain_id: Option<SLChainId>) -> Self {
+        Self {
+            l1_chain_id,
+            gateway_chain_id,
+        }
+    }
+
+    fn validate_settlement_layer(&self, settlement_layer: SettlementLayer) -> anyhow::Result<()> {
+        match settlement_layer {
+            SettlementLayer::L1(chain_id) => {
+                let expected_chain_id = SLChainId(self.l1_chain_id.0);
+                anyhow::ensure!(
+                    chain_id == expected_chain_id,
+                    "L1 chain ID from the latest sealed batch ({chain_id}) does not match the configured L1 chain ID ({expected_chain_id})"
+                );
+            }
+            SettlementLayer::Gateway(chain_id) => {
+                let expected_chain_id = self.gateway_chain_id.context(
+                    "latest sealed batch settles on Gateway, but gateway chain ID is not configured",
+                )?;
+                anyhow::ensure!(
+                    chain_id == expected_chain_id,
+                    "Gateway chain ID from the latest sealed batch ({chain_id}) does not match the configured Gateway chain ID ({expected_chain_id})"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, FromContext)]
+pub struct RpcInput {
+    pool: PoolResource<MasterPool>,
+    main_node_client: Box<DynClient<L2>>,
+}
+
+#[derive(Debug, IntoContext)]
+pub struct RpcOutput {
+    initial_settlement_mode: SettlementModeResource,
+    l1_ecosystem_contracts: L1EcosystemContractsResource,
+    l1_contracts: L1ChainContractsResource,
+    l2_contracts: L2ContractsResource,
+    dummy_verifier: DummyVerifierResource,
+    l1_batch_commit_data_generator_mode: L1BatchCommitmentModeResource,
+}
+
+#[async_trait::async_trait]
+impl WiringLayer for RpcSettlementLayerData {
+    type Input = RpcInput;
+    type Output = RpcOutput;
+
+    fn layer_name(&self) -> &'static str {
+        "rpc_settlement_layer_data"
+    }
+
+    async fn wire(self, input: Self::Input) -> Result<Self::Output, WiringError> {
+        let mut connection = input
+            .pool
+            .get()
+            .await?
+            .connection()
+            .await
+            .context("failed getting pool connection")?;
+
+        let latest_batch = connection
+            .blocks_dal()
+            .get_latest_sealed_l1_batch_header()
+            .await
+            .context("failed getting latest sealed L1 batch")?
+            .context("cannot start RPC mode without a sealed L1 batch in Postgres")?;
+        let settlement_layer = latest_batch.settlement_layer;
+        self.validate_settlement_layer(settlement_layer)?;
+
+        let remote_config = load_remote_en_config(&mut connection, input.main_node_client).await?;
+        tracing::info!(
+            l1_batch = latest_batch.number.0,
+            ?settlement_layer,
+            "Loaded RPC settlement layer data without an L1 client"
+        );
+
+        let settlement_layer = WorkingSettlementLayer::new(settlement_layer, settlement_layer);
+        Ok(RpcOutput {
+            initial_settlement_mode: SettlementModeResource::new(settlement_layer),
+            l1_contracts: L1ChainContractsResource(remote_config.l1_settelment_contracts()),
+            l1_ecosystem_contracts: L1EcosystemContractsResource(
+                remote_config.l1_specific_contracts(),
+            ),
+            l2_contracts: L2ContractsResource(remote_config.l2_contracts()),
+            dummy_verifier: DummyVerifierResource(remote_config.dummy_verifier),
             l1_batch_commit_data_generator_mode: L1BatchCommitmentModeResource(
                 remote_config.l1_batch_commit_data_generator_mode,
             ),
