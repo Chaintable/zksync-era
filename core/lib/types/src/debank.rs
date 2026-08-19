@@ -2,7 +2,7 @@ use crate::{Address, H256, H64, U256};
 use hex;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use std::str::FromStr;
+use std::{collections::HashSet, str::FromStr};
 use zksync_basic_types::{web3::Bytes, Bloom};
 
 mod hex_u64 {
@@ -149,6 +149,10 @@ pub struct DebankSimulateResp {
 pub struct DebankSingleSimulateResult {
     pub traces: Vec<DebankTrace>,
     pub events: Vec<DebankEvent>,
+    #[serde(default)]
+    pub error_traces: Vec<DebankTrace>,
+    #[serde(default)]
+    pub error_events: Vec<DebankEvent>,
     pub code: i32,
     pub err: String,
     pub gas_used: u64,
@@ -207,6 +211,26 @@ impl BlockFile {
     }
 }
 
+pub fn collect_storage_contracts(
+    traces: &[DebankTrace],
+    error_traces: &[DebankTrace],
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    traces
+        .iter()
+        .chain(error_traces)
+        .filter(|trace| trace.self_storage_change)
+        .filter_map(|trace| {
+            let address = if trace.call_type == "delegatecall" {
+                format!("{:?}", trace.from_addr)
+            } else {
+                format!("{:?}", trace.to_addr)
+            };
+            seen.insert(address.clone()).then_some(address)
+        })
+        .collect()
+}
+
 pub fn calc_validation_hash(ids: &[String]) -> i64 {
     let mut sha1_sum = U256::from(0);
     for each in ids {
@@ -253,4 +277,50 @@ pub struct KafkaBlockChangeNotification {
     pub new_blocks: Vec<KafkaBlockContext>,
     #[serde(default)]
     pub drop_blocks: Vec<KafkaBlockContext>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_contracts_include_error_traces() {
+        let normal_address = Address::from_low_u64_be(1);
+        let error_address = Address::from_low_u64_be(2);
+        let normal_trace = DebankTrace {
+            to_addr: normal_address,
+            self_storage_change: true,
+            ..Default::default()
+        };
+        let error_trace = DebankTrace {
+            from_addr: error_address,
+            call_type: "delegatecall".to_owned(),
+            self_storage_change: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            collect_storage_contracts(&[normal_trace], &[error_trace]),
+            vec![
+                format!("{:?}", normal_address),
+                format!("{:?}", error_address)
+            ]
+        );
+    }
+
+    #[test]
+    fn simulate_result_serializes_error_outputs() {
+        let result = DebankSingleSimulateResult {
+            error_traces: vec![DebankTrace {
+                error: "parent call failed".to_owned(),
+                ..Default::default()
+            }],
+            error_events: vec![DebankEvent::default()],
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(json["error_traces"].as_array().unwrap().len(), 1);
+        assert_eq!(json["error_events"].as_array().unwrap().len(), 1);
+    }
 }
