@@ -9,8 +9,8 @@ use zkstack_cli_config::{
     traits::{FileConfigWithDefaultName, SaveConfigWithBasePath},
     ContractsConfig, CoreContractsConfig, EcosystemConfig, ZkStackConfig,
 };
-use zkstack_cli_types::{L1Network, VMOption};
-use zksync_basic_types::Address;
+use zkstack_cli_types::{L1Network, VMOption, VerifierType};
+use zksync_basic_types::{Address, H256};
 
 use super::{
     args::init::{EcosystemInitArgs, EcosystemInitArgsFinal},
@@ -38,10 +38,18 @@ use crate::{
 pub async fn run(args: EcosystemInitArgs, shell: &Shell) -> anyhow::Result<()> {
     let ecosystem_config = ZkStackConfig::ecosystem(shell)?;
 
-    let initial_deployment_config = match ecosystem_config.get_initial_deployment_config() {
+    let mut initial_deployment_config = match ecosystem_config.get_initial_deployment_config() {
         Ok(config) => config,
         Err(_) => create_initial_deployments_config(shell, &ecosystem_config.config)?,
     };
+
+    // The CREATE2 salt is persisted in `initial_deployments.yaml` and is otherwise reused across
+    // runs. Reusing it means a repeated `zkstack init` (e.g. `--dev`) redeploys the ecosystem
+    // contracts to the *same* CREATE2 addresses, colliding with the previous deployment and
+    // breaking ownership. Regenerate it on every init so that each init deploys fresh contracts,
+    // preserving any other customizations already present in the file.
+    initial_deployment_config.create2_factory_salt = H256::random();
+    initial_deployment_config.save_with_base_path(shell, &ecosystem_config.config)?;
 
     let final_ecosystem_args = args
         .fill_values_with_prompt(ecosystem_config.l1_network)
@@ -126,6 +134,7 @@ async fn init_ecosystem(
             init_args.support_l2_legacy_shared_bridge_test,
             &init_args.forge_args,
             init_args.vm_option,
+            init_args.verifier,
         )
         .await?;
 
@@ -144,6 +153,7 @@ async fn init_ecosystem(
                 init_args.support_l2_legacy_shared_bridge_test,
                 &init_args.forge_args,
                 VMOption::ZKSyncOsVM,
+                init_args.verifier,
             )
             .await?;
         }
@@ -163,6 +173,7 @@ async fn deploy_and_register_ctm(
     support_l2_legacy_shared_bridge_test: bool,
     forge_args: &ForgeScriptArgs,
     vm_option: VMOption,
+    verifier: Option<VerifierType>,
 ) -> anyhow::Result<CoreContractsConfig> {
     let contracts = deploy_new_ctm_and_accept_admin(
         shell,
@@ -174,6 +185,7 @@ async fn deploy_and_register_ctm(
         bridgehub_proxy_addr,
         vm_option,
         true,
+        verifier,
     )
     .await?;
 
