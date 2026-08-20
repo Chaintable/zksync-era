@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::io::Read as IoRead;
 use std::sync::Arc;
 use std::time::Duration;
@@ -390,7 +389,7 @@ impl DebankS3OutputHandler {
                     // Push root trace
                     let root_trace =
                         debank::to_debank_trace(&first_call, tx_hash, vec![]);
-                    if first_call.revert_reason.is_some() || first_call.parent_failed {
+                    if debank::effective_failed(&first_call) {
                         all_error_traces.push(root_trace);
                     } else {
                         all_traces.push(root_trace);
@@ -418,24 +417,8 @@ impl DebankS3OutputHandler {
         }
 
         // Build storage_contracts from traces with self_storage_change
-        let mut seen = HashSet::new();
-        let storage_contracts: Vec<String> = all_traces
-            .iter()
-            .chain(all_error_traces.iter())
-            .filter(|trace| trace.self_storage_change)
-            .filter_map(|trace| {
-                let addr = if trace.call_type == "delegatecall" {
-                    format!("{:?}", trace.from_addr)
-                } else {
-                    format!("{:?}", trace.to_addr)
-                };
-                if seen.insert(addr.clone()) {
-                    Some(addr)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let storage_contracts =
+            zksync_types::debank::collect_storage_contracts(&all_traces, &all_error_traces);
 
         // Assemble BlockFile
         let block_file = BlockFile {

@@ -6,6 +6,8 @@ use zksync_types::{
 };
 use zksync_vm_interface::{Call, CallType};
 
+const PARENT_CALL_FAILED_ERROR: &str = "parent call failed";
+
 pub fn to_hash(args: &[&str]) -> String {
     let mut hasher = Md5::new();
     for arg in args {
@@ -64,14 +66,14 @@ pub fn add_trace_log(
             ..Default::default()
         };
 
-        if cf.revert_reason.is_some() || cf.parent_failed {
+        if effective_failed(cf) {
             outerrevents.push(e);
         } else {
             outevents.push(e);
         }
     }
     for (i, subcall) in cf.calls.iter().enumerate() {
-        if subcall.revert_reason.is_some() {
+        if effective_failed(subcall) {
             outerrtraces.push(to_debank_trace(
                 &subcall,
                 tx_hash,
@@ -117,8 +119,29 @@ pub fn to_debank_trace(call: &Call, tx_hash: H256, trace_addresses: Vec<u32>) ->
         storage_change: call.storage_change,
         subtraces: call.calls.len() as u32,
         trace_address: trace_addresses,
-        error: call.revert_reason.clone().unwrap_or_default(),
+        error: trace_error(call),
     }
+}
+
+fn trace_error(call: &Call) -> String {
+    if let Some(error) = &call.revert_reason {
+        return error.clone();
+    }
+    if let Some(error) = &call.error {
+        return error.clone();
+    }
+    if call.parent_failed {
+        return PARENT_CALL_FAILED_ERROR.to_owned();
+    }
+    String::new()
+}
+
+pub fn call_failed(call: &Call) -> bool {
+    call.revert_reason.is_some() || call.error.is_some()
+}
+
+pub fn effective_failed(call: &Call) -> bool {
+    call_failed(call) || call.parent_failed
 }
 
 pub fn child_trace_address(a: &[u32], i: u32) -> Vec<u32> {
@@ -129,7 +152,7 @@ pub fn child_trace_address(a: &[u32], i: u32) -> Vec<u32> {
 }
 
 pub fn set_parent_failed(cf: &mut Call, parent_failed: bool) {
-    let failed = cf.revert_reason.is_some() || parent_failed;
+    let failed = call_failed(cf) || parent_failed;
     for subcall in &mut cf.calls {
         subcall.parent_failed = failed;
         set_parent_failed(subcall, failed);

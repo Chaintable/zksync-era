@@ -1242,12 +1242,17 @@ impl DebugNamespace {
                         subcall.pos_in_parent_trace = idx as u32;
                     }
 
-                    let mut traces = vec![debank::to_debank_trace(
-                        &first_call,
-                        transaction_hash,
-                        vec![],
-                    )];
+                    debank::set_parent_failed(&mut first_call, false);
+
+                    let root_trace =
+                        debank::to_debank_trace(&first_call, transaction_hash, vec![]);
+                    let mut traces = Vec::new();
                     let mut error_traces = Vec::new();
+                    if debank::effective_failed(&first_call) {
+                        error_traces.push(root_trace);
+                    } else {
+                        traces.push(root_trace);
+                    }
                     let mut events = Vec::new();
                     let mut error_events = Vec::new();
                     debank::add_trace_log(
@@ -1266,6 +1271,8 @@ impl DebugNamespace {
                     results.push(DebankSingleSimulateResult {
                         traces,
                         events,
+                        error_traces,
+                        error_events,
                         gas_used,
                         ..Default::default()
                     });
@@ -1745,7 +1752,15 @@ impl DebugNamespace {
                     for (i, subcall) in first_call.calls.iter_mut().enumerate() {
                         subcall.pos_in_parent_trace = i as u32;
                     }
-                    debank_traces.push(debank::to_debank_trace(&first_call, l2_tx.hash(), vec![]));
+
+                    debank::set_parent_failed(&mut first_call, false);
+                    let root_trace =
+                        debank::to_debank_trace(&first_call, l2_tx.hash(), vec![]);
+                    if debank::effective_failed(&first_call) {
+                        debank_errtraces.push(root_trace);
+                    } else {
+                        debank_traces.push(root_trace);
+                    }
 
                     debank::add_trace_log(
                         l2_tx.hash(),
@@ -1769,20 +1784,8 @@ impl DebugNamespace {
         }
 
         // Collect to_addrs from traces where self_storage_change is true
-        let mut storage_contracts: Vec<String> = debank_traces
-            .iter()
-            .filter(|trace| trace.self_storage_change)
-            .map(|trace| {
-                if trace.call_type == "delegatecall" {
-                    format!("{:?}", trace.from_addr)
-                } else {
-                    format!("{:?}", trace.to_addr)
-                }
-            })
-            .collect();
-        // Deduplicate while preserving first-seen order.
-        let mut seen = HashSet::new();
-        storage_contracts.retain(|addr| seen.insert(addr.clone()));
+        let storage_contracts =
+            zksync_types::debank::collect_storage_contracts(&debank_traces, &debank_errtraces);
 
         let block_file = BlockFile {
             block: DebankBlock {
