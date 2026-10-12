@@ -184,44 +184,27 @@ impl DebankS3OutputHandler {
         let last_ctx = self.last_block_context.clone();
         let is_backup = self.is_backup;
         self.pending_upload = Some(tokio::spawn(async move {
-            // ~1 hour total: first 5 attempts cover ~62s (2+4+8+16+32),
-            // remaining 59 attempts at the 60s cap add ~3540s.
-            const MAX_RETRIES: u32 = 64;
             const INITIAL_BACKOFF: Duration = Duration::from_secs(2);
             const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
-            let mut uploaded = false;
-            for attempt in 0..MAX_RETRIES {
+            let mut attempt = 0u64;
+            let mut backoff = INITIAL_BACKOFF;
+            loop {
+                attempt = attempt.saturating_add(1);
                 match upload_to_s3(&s3, chain_id, version.as_deref(), &output).await {
-                    Ok(()) => {
-                        uploaded = true;
-                        break;
-                    }
+                    Ok(()) => break,
                     Err(e) => {
-                        let backoff = std::cmp::min(
-                            INITIAL_BACKOFF
-                                .saturating_mul(2u32.saturating_pow(attempt)),
-                            MAX_BACKOFF,
-                        );
                         tracing::warn!(
-                            "Failed to upload debank data for block {} to S3 (attempt {}/{}): {:#}. Retrying in {:?}",
+                            "Failed to upload debank data for block {} to S3 (attempt {}): {:#}. Retrying in {:?}",
                             block_number,
-                            attempt + 1,
-                            MAX_RETRIES,
+                            attempt,
                             e,
                             backoff,
                         );
                         tokio::time::sleep(backoff).await;
+                        backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
                     }
                 }
-            }
-            if !uploaded {
-                tracing::error!(
-                    "Failed to upload debank data for block {} to S3 after {} attempts, giving up",
-                    block_number,
-                    MAX_RETRIES,
-                );
-                return None;
             }
             tracing::info!(
                 "Uploaded debank data for block {} to S3 ({} txs, {} traces, {} events)",
