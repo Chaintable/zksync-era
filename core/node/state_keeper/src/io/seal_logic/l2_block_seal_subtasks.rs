@@ -544,9 +544,11 @@ mod tests {
             execution_status: TxExecutionStatus::Success,
             refunded_gas: 0,
             call_traces: Vec::new(),
+            output: vec![],
             revert_reason: None,
         }];
         let events = vec![VmEvent {
+            position: 0,
             location: (L1BatchNumber(1), 0),
             address: Address::zero(),
             indexed_topics: Vec::new(),

@@ -1,6 +1,10 @@
-use zksync_multivm::tracers::debank::{add_trace_log, set_parent_failed, to_debank_trace};
+use std::collections::HashSet;
+
+use zksync_multivm::tracers::debank::{
+    add_trace_log, root_trace_id, set_parent_failed, to_debank_trace,
+};
 use zksync_types::H256;
-use zksync_vm_interface::{Call, VmEvent};
+use zksync_vm_interface::{Call, CallEventMetadata, VmEvent};
 
 const PARENT_CALL_FAILED_ERROR: &str = "parent call failed";
 
@@ -124,4 +128,206 @@ fn successful_tree_remains_in_normal_outputs() {
     assert!(error_traces.is_empty());
     assert_eq!(events.len(), 2);
     assert!(error_events.is_empty());
+}
+
+#[test]
+fn legacy_positions_are_rebuilt_at_every_depth() {
+    let leaves = vec![Call::default(), Call::default()];
+    let mut root = Call {
+        trace_id: root_trace_id(H256::zero()),
+        calls: vec![
+            Call {
+                calls: leaves.clone(),
+                ..Call::default()
+            },
+            Call {
+                calls: leaves,
+                ..Call::default()
+            },
+        ],
+        ..Call::default()
+    };
+    let mut traces = vec![];
+    add_trace_log(
+        H256::zero(),
+        &mut traces,
+        &mut vec![],
+        &mut vec![],
+        &mut vec![],
+        vec![],
+        &mut root,
+    );
+    assert_eq!(traces.len(), 6);
+    assert_eq!(
+        traces
+            .iter()
+            .map(|trace| &trace.id)
+            .collect::<HashSet<_>>()
+            .len(),
+        6
+    );
+    for trace in &traces {
+        assert_eq!(
+            trace.pos_in_parent_trace,
+            *trace.trace_address.last().unwrap()
+        );
+        if trace.trace_address.len() > 1 {
+            let parent = traces
+                .iter()
+                .find(|parent| {
+                    parent.trace_address == trace.trace_address[..trace.trace_address.len() - 1]
+                })
+                .unwrap();
+            assert_eq!(trace.parent_trace_id, parent.id);
+        }
+    }
+}
+
+#[test]
+fn root_identity_uses_the_entire_transaction_hash() {
+    let first = H256::repeat_byte(0x11);
+    let mut second = first;
+    second.0[10] = 0x22;
+    assert_eq!(first.to_string(), second.to_string());
+    assert_ne!(root_trace_id(first), root_trace_id(second));
+}
+
+#[test]
+fn duplicate_logs_keep_their_frames_and_execution_order() {
+    let event = VmEvent::default();
+    let mut root = Call {
+        trace_id: root_trace_id(H256::zero()),
+        events: vec![event.clone(), event.clone()],
+        event_metadata: vec![
+            CallEventMetadata {
+                timestamp: 10,
+                reverted: false,
+            },
+            CallEventMetadata {
+                timestamp: 30,
+                reverted: false,
+            },
+        ],
+        calls: vec![Call {
+            call_start_timestamp: 15,
+            events: vec![event],
+            event_metadata: vec![CallEventMetadata {
+                timestamp: 20,
+                reverted: false,
+            }],
+            ..Call::default()
+        }],
+        ..Call::default()
+    };
+    let mut events = vec![];
+    add_trace_log(
+        H256::zero(),
+        &mut vec![],
+        &mut vec![],
+        &mut events,
+        &mut vec![],
+        vec![],
+        &mut root,
+    );
+    assert_eq!(events.len(), 3);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.log_index)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    assert_eq!(events[0].parent_trace_id, root.trace_id);
+    assert_eq!(events[1].parent_trace_id, root.calls[0].trace_id);
+    assert_eq!(events[2].parent_trace_id, root.trace_id);
+    assert_eq!(events[0].pos_in_parent_trace, 0);
+    assert_eq!(root.calls[0].pos_in_parent_trace, 1);
+    assert_eq!(events[2].pos_in_parent_trace, 2);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| &event.id)
+            .collect::<HashSet<_>>()
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn near_call_rollback_survives_outer_success_and_failure_propagation() {
+    let mut root = Call {
+        events: vec![VmEvent::default()],
+        event_metadata: vec![CallEventMetadata {
+            timestamp: 10,
+            reverted: true,
+        }],
+        calls: vec![Call {
+            parent_failed: true,
+            calls: vec![Call::default()],
+            ..Call::default()
+        }],
+        ..Call::default()
+    };
+    set_parent_failed(&mut root, false);
+    assert!(root.calls[0].parent_failed);
+    assert!(root.calls[0].calls[0].parent_failed);
+    let mut events = vec![];
+    let mut error_events = vec![];
+    add_trace_log(
+        H256::zero(),
+        &mut vec![],
+        &mut vec![],
+        &mut events,
+        &mut error_events,
+        vec![],
+        &mut root,
+    );
+    assert!(events.is_empty());
+    assert_eq!(error_events.len(), 1);
+}
+
+#[test]
+fn batch_tip_has_block_scoped_references_without_a_synthetic_transaction() {
+    use zksync_multivm::tracers::debank::append_batch_tip;
+    use zksync_types::debank::{BlockFile, DebankBlock};
+    use zksync_vm_interface::FinishedL1Batch;
+
+    let mut tip = FinishedL1Batch::mock();
+    tip.block_tip_call_traces = vec![Call {
+        events: vec![VmEvent::default()],
+        event_metadata: vec![CallEventMetadata {
+            timestamp: 10,
+            reverted: false,
+        }],
+        self_storage_change: true,
+        storage_change: true,
+        ..Call::default()
+    }];
+    let mut block = BlockFile {
+        block: DebankBlock {
+            id: H256::repeat_byte(1),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    append_batch_tip(&mut block, &tip);
+    assert!(block.transactions.is_empty());
+    assert_eq!(block.traces.len(), 2);
+    assert!(block.traces.iter().all(|trace| trace.tx_id.is_empty()));
+    assert_eq!(block.events.len(), 1);
+    assert!(block.events[0].tx_id.is_empty());
+    assert!(block
+        .traces
+        .iter()
+        .any(|trace| trace.id == block.events[0].parent_trace_id));
+    let first_id = block.events[0].id.clone();
+    let mut other = BlockFile {
+        block: DebankBlock {
+            id: H256::repeat_byte(2),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    append_batch_tip(&mut other, &tip);
+    assert_ne!(other.events[0].id, first_id);
 }

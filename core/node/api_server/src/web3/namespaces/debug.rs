@@ -541,7 +541,7 @@ impl DebugNamespace {
 
         let connection = self.state.acquire_connection().await?;
         let storage =
-            PostgresStorage::new_async(Handle::current(), connection, storage_l2_block, false)
+            PostgresStorage::new_async(Handle::current(), connection, storage_l2_block, true)
                 .await
                 .context("cannot create PostgresStorage for batch replay")?;
 
@@ -1236,8 +1236,7 @@ impl DebugNamespace {
                     );
                     let transaction_hash = H256::random();
                     let mut first_call = call;
-                    first_call.trace_id =
-                        debank::to_hash(&[transaction_hash.to_string().as_str(), "", "0"]);
+                    first_call.trace_id = debank::root_trace_id(transaction_hash);
                     for (idx, subcall) in first_call.calls.iter_mut().enumerate() {
                         subcall.pos_in_parent_trace = idx as u32;
                     }
@@ -1361,10 +1360,10 @@ impl DebugNamespace {
         let mut transactions = Vec::new();
         let mut traces = Vec::new();
 
-        // System contracts use "0xgenesis020000000000000" prefix.
+        // System code projections use the canonical kind-2 genesis identity.
         for (idx, addr) in system_contract_addresses.iter().enumerate() {
-            let addr_str = format!("{:#x}", addr);
-            let genesis_id = format!("0xgenesis020000000000000{}", addr_str);
+            let genesis_hash = debank::genesis_tx_id(2, *addr);
+            let genesis_id = format!("{genesis_hash:#x}");
 
             // Get the deployed bytecode from the database.
             let bytecode = connection
@@ -1392,7 +1391,7 @@ impl DebugNamespace {
                 value: U256::zero(),
             });
 
-            let trace_id = debank::to_hash(&[&idx.to_string()]);
+            let trace_id = debank::root_trace_id(genesis_hash);
             traces.push(DebankTrace {
                 id: trace_id,
                 from_addr: Address::zero(),
@@ -1421,8 +1420,8 @@ impl DebugNamespace {
                 .parse()
                 .unwrap();
             let idx = system_contract_addresses.len();
-            let addr_str = format!("{:#x}", native_coin_address);
-            let genesis_id = format!("0xgenesis030000000000000{}", addr_str);
+            let genesis_hash = debank::genesis_tx_id(3, native_coin_address);
+            let genesis_id = format!("{genesis_hash:#x}");
 
             let bytecode = connection
                 .storage_web3_dal()
@@ -1449,7 +1448,7 @@ impl DebugNamespace {
                 value: U256::zero(),
             });
 
-            let trace_id = debank::to_hash(&[&idx.to_string()]);
+            let trace_id = debank::root_trace_id(genesis_hash);
             traces.push(DebankTrace {
                 id: trace_id,
                 from_addr: Address::zero(),
@@ -1745,8 +1744,7 @@ impl DebugNamespace {
                     );
 
                     let mut first_call = call;
-                    first_call.trace_id =
-                        debank::to_hash(&[l2_tx.hash().to_string().as_str(), "", "0"]);
+                    first_call.trace_id = debank::root_trace_id(l2_tx.hash());
 
                     for (i, subcall) in first_call.calls.iter_mut().enumerate() {
                         subcall.pos_in_parent_trace = i as u32;
@@ -1965,8 +1963,7 @@ impl DebugNamespace {
                     })?;
 
                 if let Some(CallTracerResult::CallTrace(debug_call)) = trace_result {
-                    let root_trace_id =
-                        debank::to_hash(&[tx_hash.to_string().as_str(), "", "0"]);
+                    let root_trace_id = debank::root_trace_id(tx_hash);
                     Self::flatten_debug_call_to_debank_traces(
                         &debug_call,
                         tx_hash,
@@ -2093,7 +2090,7 @@ impl DebugNamespace {
 
         for (i, subcall) in debug_call.calls.iter().enumerate() {
             let child_trace_id = debank::to_hash(&[
-                tx_hash.to_string().as_str(),
+                &format!("{tx_hash:#x}"),
                 trace_id,
                 &(i as u32).to_string(),
             ]);
@@ -2109,5 +2106,4 @@ impl DebugNamespace {
             );
         }
     }
-
 }

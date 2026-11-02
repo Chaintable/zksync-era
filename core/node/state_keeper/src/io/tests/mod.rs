@@ -539,6 +539,7 @@ fn bytecode_publishing_events(
 ) -> Vec<VmEvent> {
     bytecode_hashes
         .map(|bytecode_hash| VmEvent {
+            position: 0,
             location: (l1_batch_number, tx_index),
             address: KNOWN_CODES_STORAGE_ADDRESS,
             indexed_topics: vec![

@@ -467,6 +467,7 @@ mod tests {
             address: Address::repeat_byte(index),
             indexed_topics: (0..topic_count).map(H256::repeat_byte).collect(),
             value: vec![index],
+            position: 0,
         }
     }
 

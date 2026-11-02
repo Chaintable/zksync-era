@@ -2,7 +2,125 @@
 
 use serde::{Deserialize, Serialize};
 use zksync_types::{Address, U256};
-use zksync_vm_interface::{Call, CallType};
+use zksync_vm_interface::{Call, CallType, VmEvent};
+
+/// Official v25 call layout: execution fields, without DeBank extensions.
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct LegacyCall25 {
+    pub r#type: CallType,
+    pub from: Address,
+    pub to: Address,
+    pub parent_gas: u64,
+    pub gas: u64,
+    pub gas_used: u64,
+    pub value: U256,
+    pub input: Vec<u8>,
+    pub output: Vec<u8>,
+    pub error: Option<String>,
+    pub revert_reason: Option<String>,
+    pub calls: Vec<LegacyCall25>,
+}
+
+impl From<LegacyCall25> for Call {
+    fn from(call: LegacyCall25) -> Self {
+        Self {
+            r#type: call.r#type,
+            from: call.from,
+            to: call.to,
+            parent_gas: call.parent_gas,
+            gas: call.gas,
+            gas_used: call.gas_used,
+            value: call.value,
+            input: call.input,
+            output: call.output,
+            error: call.error,
+            revert_reason: call.revert_reason,
+            calls: call.calls.into_iter().map(Into::into).collect(),
+            ..Self::default()
+        }
+    }
+}
+
+/// Stored DeBank call layout before execution event metadata was introduced.
+/// Keep the recursive wire type independent of the current `Call` layout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct StoredCallV1 {
+    pub r#type: CallType,
+    pub from: Address,
+    pub to: Address,
+    pub parent_gas: u64,
+    pub gas: u64,
+    pub gas_used: u64,
+    pub value: U256,
+    pub input: Vec<u8>,
+    pub output: Vec<u8>,
+    pub error: Option<String>,
+    pub revert_reason: Option<String>,
+    pub calls: Vec<StoredCallV1>,
+    pub call_start_timestamp: u32,
+    pub events: Vec<VmEvent>,
+    pub pos_in_parent_trace: u32,
+    pub parent_trace_id: Option<String>,
+    pub trace_id: String,
+    pub storage_change: bool,
+    pub self_storage_change: bool,
+    pub parent_failed: bool,
+}
+
+impl From<StoredCallV1> for Call {
+    fn from(call: StoredCallV1) -> Self {
+        Self {
+            r#type: call.r#type,
+            from: call.from,
+            to: call.to,
+            parent_gas: call.parent_gas,
+            gas: call.gas,
+            gas_used: call.gas_used,
+            value: call.value,
+            input: call.input,
+            output: call.output,
+            error: call.error,
+            revert_reason: call.revert_reason,
+            calls: call.calls.into_iter().map(Into::into).collect(),
+            call_start_timestamp: call.call_start_timestamp,
+            events: call.events,
+            pos_in_parent_trace: call.pos_in_parent_trace,
+            parent_trace_id: call.parent_trace_id,
+            trace_id: call.trace_id,
+            storage_change: call.storage_change,
+            self_storage_change: call.self_storage_change,
+            parent_failed: call.parent_failed,
+            event_metadata: vec![],
+        }
+    }
+}
+
+impl From<Call> for StoredCallV1 {
+    fn from(call: Call) -> Self {
+        Self {
+            r#type: call.r#type,
+            from: call.from,
+            to: call.to,
+            parent_gas: call.parent_gas,
+            gas: call.gas,
+            gas_used: call.gas_used,
+            value: call.value,
+            input: call.input,
+            output: call.output,
+            error: call.error,
+            revert_reason: call.revert_reason,
+            calls: call.calls.into_iter().map(Into::into).collect(),
+            call_start_timestamp: call.call_start_timestamp,
+            events: call.events,
+            pos_in_parent_trace: call.pos_in_parent_trace,
+            parent_trace_id: call.parent_trace_id,
+            trace_id: call.trace_id,
+            storage_change: call.storage_change,
+            self_storage_change: call.self_storage_change,
+            parent_failed: call.parent_failed,
+        }
+    }
+}
 
 /// Represents a call in the VM trace.
 /// This version of the call represents the call structure before the 1.5.0 protocol version, where
@@ -62,7 +180,7 @@ pub(super) struct LegacyMixedCall {
     /// Revert reason.
     pub revert_reason: Option<String>,
     /// Subcalls.
-    pub calls: Vec<Call>,
+    pub calls: Vec<StoredCallV1>,
 }
 
 impl From<LegacyCall> for Call {
@@ -88,6 +206,7 @@ impl From<LegacyCall> for Call {
             self_storage_change: false,
             storage_change: false,
             parent_failed: false,
+            event_metadata: vec![],
         }
     }
 }
@@ -106,7 +225,7 @@ impl From<LegacyMixedCall> for Call {
             output: legacy_call.output,
             error: legacy_call.error,
             revert_reason: legacy_call.revert_reason,
-            calls: legacy_call.calls,
+            calls: legacy_call.calls.into_iter().map(Into::into).collect(),
             call_start_timestamp: 0,
             events: vec![],
             parent_trace_id: None,
@@ -115,6 +234,7 @@ impl From<LegacyMixedCall> for Call {
             self_storage_change: false,
             storage_change: false,
             parent_failed: false,
+            event_metadata: vec![],
         }
     }
 }
@@ -179,7 +299,7 @@ impl TryFrom<Call> for LegacyMixedCall {
             output: call.output,
             error: call.error,
             revert_reason: call.revert_reason,
-            calls: call.calls,
+            calls: call.calls.into_iter().map(Into::into).collect(),
         })
     }
 }
@@ -195,8 +315,8 @@ mod tests {
     }
 
     #[test]
-    fn call_deserialization() {
+    fn official_v25_call_deserialization() {
         let b = hex::decode("00000000002a000000000000003078303030303030303030303030303030303030303030303030303030303030303030303030303030302a00000000000000307830303030303030303030303030303030303030303030303030303030303030303030303038303031fa59060000000000fa5906000000000057ed0300000000000f00000000000000307833386437656134633638303030000000000000000000000000000000000000010000000000000000000000002a000000000000003078303030303030303030303030303030303030303030303030303030303030303030303030383030312a00000000000000307830303030303030303030303030303030303030303030303030303030303030303030303038303062bae978fb00000000da058bf700000000510f0000000000000300000000000000307830040000000000000030e5ccbd000000000000000000000000000000000000").unwrap();
-        let _: Call = bincode::deserialize(&b).unwrap();
+        let _: LegacyCall25 = bincode::deserialize(&b).unwrap();
     }
 }

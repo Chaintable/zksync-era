@@ -11,11 +11,28 @@ keywords.workspace = true
 categories.workspace = true
 publish = false
 
+[[bin]]
+name = "debank_execution_replay"
+path = "src/bin/debank_execution_replay.rs"
+
+[[bin]]
+name = "debank_genesis_rebuild"
+path = "src/bin/debank_genesis_rebuild.rs"
+
 [dependencies]
 zksync_types.workspace = true
 zksync_web3_decl.workspace = true
 zksync_system_constants.workspace = true
 zksync_multivm.workspace = true
+zksync_dal.workspace = true
+zksync_state.workspace = true
+zksync_vm_executor.workspace = true
+zksync_vm_interface.workspace = true
+once_cell.workspace = true
+serde.workspace = true
+sha2.workspace = true
+hex.workspace = true
+sqlx.workspace = true
 
 aws-config.workspace = true
 aws-sdk-s3.workspace = true

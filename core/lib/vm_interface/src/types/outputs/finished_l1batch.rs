@@ -1,12 +1,14 @@
 use zksync_types::writes::StateDiffRecord;
 
-use super::{BootloaderMemory, CurrentExecutionState, VmExecutionResultAndLogs};
+use super::{BootloaderMemory, Call, CurrentExecutionState, VmExecutionResultAndLogs};
 
 /// State of the VM after the batch execution.
 #[derive(Debug, Clone)]
 pub struct FinishedL1Batch {
     /// Result of the execution of the block tip part of the batch.
     pub block_tip_execution_result: VmExecutionResultAndLogs,
+    /// Calls captured while finalizing the batch; these have no ordinary tx.
+    pub block_tip_call_traces: Vec<Call>,
     /// State of the VM after the execution of the last transaction.
     pub final_execution_state: CurrentExecutionState,
     /// Memory of the bootloader with all executed transactions. Could be none for old versions of the VM.
@@ -21,6 +23,7 @@ impl FinishedL1Batch {
     pub fn mock() -> Self {
         FinishedL1Batch {
             block_tip_execution_result: VmExecutionResultAndLogs::mock_success(),
+            block_tip_call_traces: vec![],
             final_execution_state: CurrentExecutionState {
                 events: vec![],
                 deduplicated_storage_logs: vec![],

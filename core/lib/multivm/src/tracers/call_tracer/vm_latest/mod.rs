@@ -1,6 +1,9 @@
-use zk_evm_1_5_2::aux_structures::Timestamp;
 use zk_evm_1_5_2::{
-    tracing::{AfterExecutionData, VmLocalStateData},
+    aux_structures::{LogQuery, Timestamp},
+    reference_impls::event_sink::EventMessage,
+};
+use zk_evm_1_5_2::{
+    tracing::{AfterExecutionData, BeforeExecutionData, VmLocalStateData},
     zkevm_opcode_defs::{
         FarCallABI, FatPointer, LogOpcode, Opcode, RetOpcode,
         CALL_IMPLICIT_CALLDATA_FAT_PTR_REGISTER, RET_IMPLICIT_RETURNDATA_PARAMS_REGISTER,
@@ -8,7 +11,7 @@ use zk_evm_1_5_2::{
 };
 use zksync_system_constants::CONTRACT_DEPLOYER_ADDRESS;
 use zksync_types::{zk_evm_types::FarCallOpcode, L1BatchNumber, U256};
-use zksync_vm_interface::tracer::TracerExecutionStatus;
+use zksync_vm_interface::{tracer::TracerExecutionStatus, CallEventMetadata};
 
 use crate::{
     glue::GlueInto,
@@ -23,7 +26,53 @@ use crate::{
     },
 };
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct CallEvents {
+    fragments: Vec<(LogQuery, bool)>,
+    near_calls: Vec<(usize, usize)>,
+}
+
+impl CallEvents {
+    fn into_events(self, call: &mut Call, batch_number: L1BatchNumber) {
+        let fragments = self.fragments.into_iter().map(|(query, reverted)| {
+            (
+                EventMessage {
+                    shard_id: query.shard_id,
+                    is_first: query.is_service,
+                    tx_number_in_block: query.tx_number_in_block,
+                    address: query.address,
+                    key: query.key,
+                    value: query.written_value,
+                },
+                query.timestamp.0,
+                reverted,
+            )
+        });
+        for event in events::merge_events_with_metadata(fragments) {
+            call.event_metadata.push(CallEventMetadata {
+                timestamp: event.timestamp,
+                reverted: event.reverted,
+            });
+            let mut event = event.into_vm_event(batch_number);
+            event.position = (call.calls.len() + call.events.len()) as u32;
+            call.events.push(event);
+        }
+    }
+}
+
 impl<S, H: HistoryMode> DynTracer<S, SimpleMemory<H>> for CallTracer {
+    fn before_execution(
+        &mut self,
+        state: VmLocalStateData<'_>,
+        data: BeforeExecutionData,
+        _memory: &SimpleMemory<H>,
+        _storage: StoragePtr<S>,
+    ) {
+        self.pending_event_timestamp =
+            matches!(data.opcode.variant.opcode, Opcode::Log(LogOpcode::Event))
+                .then_some(state.vm_local_state.timestamp + 1);
+    }
+
     fn after_execution(
         &mut self,
         state: VmLocalStateData<'_>,
@@ -34,6 +83,11 @@ impl<S, H: HistoryMode> DynTracer<S, SimpleMemory<H>> for CallTracer {
         match data.opcode.variant.opcode {
             Opcode::NearCall(_) => {
                 self.increase_near_call_count();
+                if let Some(call) = self.stack.last_mut() {
+                    call.latest_events
+                        .near_calls
+                        .push((call.latest_events.fragments.len(), call.farcall.calls.len()));
+                }
             }
             Opcode::FarCall(far_call) => {
                 // We use parent gas for properly calculating gas used in the trace.
@@ -58,8 +112,6 @@ impl<S, H: HistoryMode> DynTracer<S, SimpleMemory<H>> for CallTracer {
                 self.push_call_and_update_stats(current_call, 0);
             }
             Opcode::Log(log_opcode) => {
-                // Q: if it's possible to append logs to call frame here?
-                // A: Impossible, because the logs the Opcode::Log generated is not the log in EVM format, Opcode::Log generate log fragmentation to EVM logs
                 match log_opcode {
                     LogOpcode::StorageWrite | LogOpcode::TransientStorageWrite => {
                         // We need to set the storage change here, because the log opcode
@@ -88,77 +140,21 @@ impl<S: WriteStorage, H: HistoryMode> VmTracer<S, H> for CallTracer {
         state: &mut ZkSyncVmState<S, H>,
         _bootloader_state: &mut BootloaderState,
     ) -> TracerExecutionStatus {
-        // get the last call that have just returned in `handle_ret_op_code_latest` method
-        let last_subcall;
-        if self.subcall_returned {
-            last_subcall = self
-                .stack
-                .last_mut()
-                .expect("There should be at least one call in the stack")
-                .farcall
-                .calls
-                .last_mut()
-                .expect("There should be at least one sub call in the parent calls");
-            self.subcall_returned = false;
-        } else if self.topcall_returned {
-            last_subcall = self
-                .finished_calls
-                .last_mut()
-                .expect("There should be at least one call in the stack");
-            self.topcall_returned = false;
-        } else {
-            return TracerExecutionStatus::Continue;
-        }
-
-        // Numbering subcalls position in the parent
-        last_subcall
-            .calls
-            .iter_mut()
-            .enumerate()
-            .for_each(|(i, subcall)| {
-                subcall.pos_in_parent_trace = i as u32;
-            });
-
-        // collect events
-        let from_timestamp = Timestamp(last_subcall.call_start_timestamp); // the start time of the cycle
-        let (raw_events, _) = state
-            .event_sink
-            .get_events_and_l2_l1_logs_after_timestamp(from_timestamp);
-
-        let existing_events: Vec<_> = last_subcall
-            .calls
-            .iter()
-            .flat_map(|call| {
-                let mut all_events = call.events.clone();
-                let mut stack = call.calls.clone();
-                while let Some(subcall) = stack.pop() {
-                    all_events.extend(subcall.events.clone());
-                    stack.extend(subcall.calls.clone());
+        // Read the fragment immediately after EVENT, before a RET can append rollback
+        // queries or discard a frame. The active far-call is the emission context.
+        if let Some(timestamp) = self.pending_event_timestamp.take() {
+            if let (Some(call), Some(query)) = (
+                self.stack.last_mut(),
+                state
+                    .event_sink
+                    .log_queries_after_timestamp(Timestamp(timestamp))
+                    .last(),
+            ) {
+                if !query.rollback && query.timestamp.0 == timestamp {
+                    call.latest_events.fragments.push((**query, false));
                 }
-                all_events
-            })
-            .collect();
-        let events = events::merge_events(raw_events)
-            .into_iter()
-            .map(|e| {
-                e.into_vm_event(L1BatchNumber(0)) // TODO fill the l2 block number
-            })
-            .filter(|e| {
-                !existing_events.iter().any(|existing_event| {
-                    existing_event.address == e.address
-                        && existing_event.indexed_topics == e.indexed_topics
-                        && existing_event.value == e.value
-                })
-            })
-            .enumerate()
-            .map(|(idx, mut e)| {
-                e.position = (last_subcall.calls.len() + idx) as u32;
-                e
-            })
-            .collect();
-
-        last_subcall.events = events;
-
+            }
+        }
         TracerExecutionStatus::Continue
     }
 
@@ -224,8 +220,23 @@ impl CallTracer {
 
         current_call.input = calldata;
         current_call.r#type = call_type;
-        current_call.from = current.msg_sender;
-        current_call.to = current.this_address;
+        if matches!(call_type, CallType::Call(FarCallOpcode::Delegate)) {
+            // Delegate execution retains msg.sender and this_address, but the
+            // trace calls the library from the caller's storage context. This
+            // also makes `storage_contracts` resolve to that context, not to the
+            // original external sender or the library's code address.
+            current_call.from = state
+                .vm_local_state
+                .callstack
+                .inner
+                .last()
+                .expect("delegate call has a parent frame")
+                .this_address;
+            current_call.to = current.code_address;
+        } else {
+            current_call.from = current.msg_sender;
+            current_call.to = current.this_address;
+        }
         current_call.value = U256::from(current.context_u128_value);
         current_call.gas = current.ergs_remaining as u64;
     }
@@ -264,6 +275,7 @@ impl CallTracer {
                 if let Some(output) = output {
                     current_call.revert_reason =
                         Some(VmRevertReason::from(output.as_slice()).to_string());
+                    current_call.output = output;
                 } else {
                     current_call.revert_reason = Some("Unknown revert reason".to_string());
                 }
@@ -280,16 +292,36 @@ impl CallTracer {
         memory: &SimpleMemory<H>,
         ret_opcode: RetOpcode,
     ) {
-        let Some(mut current_call) = self.stack.pop() else {
+        let Some(current_call) = self.stack.last_mut() else {
             return;
         };
 
         if current_call.near_calls_after > 0 {
             current_call.near_calls_after -= 1;
-            self.push_call_and_update_stats(current_call.farcall, current_call.near_calls_after);
+            current_call.stack_depth_on_prefix -= 1;
+            let (fragment_start, child_start) = current_call
+                .latest_events
+                .near_calls
+                .pop()
+                .expect("near-call event checkpoint is missing");
+            if !matches!(ret_opcode, RetOpcode::Ok) {
+                for (_, reverted) in &mut current_call.latest_events.fragments[fragment_start..] {
+                    *reverted = true;
+                }
+                for child in &mut current_call.farcall.calls[child_start..] {
+                    child.parent_failed = true;
+                }
+            }
             return;
         }
 
+        let mut current_call = self.stack.pop().unwrap();
+        // This frame owns only the fragments it executed. Descendant emissions are
+        // retained on their own frames, including identical logs and reverted logs.
+        current_call
+            .latest_events
+            .into_events(&mut current_call.farcall, L1BatchNumber(0));
+        current_call.farcall.assign_child_positions();
         current_call.farcall.gas_used = current_call
             .farcall
             .parent_gas
@@ -303,10 +335,65 @@ impl CallTracer {
                 parent_call.farcall.storage_change = true;
             }
             parent_call.farcall.calls.push(current_call.farcall);
-            self.subcall_returned = true;
         } else {
             self.finished_calls.push(current_call.farcall);
-            self.topcall_returned = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zksync_types::{Address, EVENT_WRITER_ADDRESS};
+
+    use super::*;
+
+    fn fragments(timestamp: u32) -> CallEvents {
+        let emitter = Address::repeat_byte(0x11);
+        let head = LogQuery {
+            timestamp: Timestamp(timestamp),
+            tx_number_in_block: 1,
+            shard_id: 0,
+            aux_byte: 1,
+            address: EVENT_WRITER_ADDRESS,
+            key: U256::from(2),
+            read_value: U256::zero(),
+            written_value: U256::from_big_endian(emitter.as_bytes()),
+            rw_flag: true,
+            rollback: false,
+            is_service: true,
+        };
+        let body = LogQuery {
+            timestamp: Timestamp(timestamp + 4),
+            is_service: false,
+            key: U256::from(0x55),
+            written_value: U256::zero(),
+            ..head
+        };
+        CallEvents {
+            fragments: vec![(head, false), (body, false)],
+            near_calls: vec![],
+        }
+    }
+
+    #[test]
+    fn repeated_event_contents_retain_distinct_execution_identities() {
+        let mut parent = Call::default();
+        let mut child = Call::default();
+        fragments(10).into_events(&mut parent, L1BatchNumber(2));
+        fragments(20).into_events(&mut child, L1BatchNumber(2));
+        assert_eq!(parent.events, child.events);
+        assert_eq!(parent.event_metadata[0].timestamp, 10);
+        assert_eq!(child.event_metadata[0].timestamp, 20);
+        assert_eq!(parent.events[0].location.0, L1BatchNumber(2));
+    }
+
+    #[test]
+    fn rollback_metadata_survives_fragment_merging() {
+        let mut fragments = fragments(10);
+        fragments.fragments[1].1 = true;
+        let mut call = Call::default();
+        fragments.into_events(&mut call, L1BatchNumber(2));
+        assert_eq!(call.events.len(), 1);
+        assert!(call.event_metadata[0].reverted);
     }
 }

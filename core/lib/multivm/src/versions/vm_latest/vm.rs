@@ -209,6 +209,19 @@ impl<S: WriteStorage, H: HistoryMode> VmInterface for Vm<S, H> {
     }
 
     fn finish_batch(&mut self, pubdata_builder: Rc<dyn PubdataBuilder>) -> FinishedL1Batch {
+        self.finish_batch_with_tracer(&mut TracerDispatcher::default(), pubdata_builder)
+    }
+}
+
+impl<S: WriteStorage, H: HistoryMode> Vm<S, H> {
+    /// Execute the batch tip with the same tracer as transactions. Ordinary
+    /// `finish_batch` uses an empty dispatcher and cannot recover system call
+    /// frames or events that are rolled back during finalization.
+    pub fn finish_batch_with_tracer(
+        &mut self,
+        tracer: &mut TracerDispatcher<S, H::Vm1_5_2>,
+        pubdata_builder: Rc<dyn PubdataBuilder>,
+    ) -> FinishedL1Batch {
         let pubdata_tracer = Some(PubdataTracer::new(
             self.batch_env.clone(),
             VmExecutionMode::Batch,
@@ -216,17 +229,14 @@ impl<S: WriteStorage, H: HistoryMode> VmInterface for Vm<S, H> {
             Some(pubdata_builder.clone()),
         ));
 
-        let result = self.inspect_inner(
-            &mut TracerDispatcher::default(),
-            VmExecutionMode::Batch,
-            pubdata_tracer,
-        );
+        let result = self.inspect_inner(tracer, VmExecutionMode::Batch, pubdata_tracer);
         let execution_state = self.get_current_execution_state();
         let bootloader_memory = self
             .bootloader_state
             .bootloader_memory(pubdata_builder.as_ref());
         FinishedL1Batch {
             block_tip_execution_result: result,
+            block_tip_call_traces: vec![],
             final_execution_state: execution_state,
             final_bootloader_memory: Some(bootloader_memory),
             pubdata_input: Some(

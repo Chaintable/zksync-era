@@ -300,7 +300,8 @@ async fn process_genesis_block(client: &Client<L2>) -> anyhow::Result<DebankOutP
 
     for (idx, addr) in system_contract_addresses.iter().enumerate() {
         let addr_str = format!("{:#x}", addr);
-        let genesis_id = format!("0xgenesis020000000000000{}", addr_str);
+        let genesis_hash = debank::genesis_tx_id(2, *addr);
+        let genesis_id = format!("{genesis_hash:#x}");
 
         tracing::info!(
             "Fetching code for system contract {}/{}: {}",
@@ -333,7 +334,7 @@ async fn process_genesis_block(client: &Client<L2>) -> anyhow::Result<DebankOutP
             value: U256::zero(),
         });
 
-        let trace_id = debank::to_hash(&[&idx.to_string()]);
+        let trace_id = debank::root_trace_id(genesis_hash);
         traces.push(DebankTrace {
             id: trace_id,
             from_addr: Address::zero(),
@@ -363,7 +364,8 @@ async fn process_genesis_block(client: &Client<L2>) -> anyhow::Result<DebankOutP
             .unwrap();
         let idx = system_contract_addresses.len();
         let addr_str = format!("{:#x}", native_coin_address);
-        let genesis_id = format!("0xgenesis030000000000000{}", addr_str);
+        let genesis_hash = debank::genesis_tx_id(3, native_coin_address);
+        let genesis_id = format!("{genesis_hash:#x}");
 
         tracing::info!("Fetching code for native coin address: {}", addr_str);
         let input = retry(&format!("get_code({})", addr_str), || {
@@ -390,7 +392,7 @@ async fn process_genesis_block(client: &Client<L2>) -> anyhow::Result<DebankOutP
             value: U256::zero(),
         });
 
-        let trace_id = debank::to_hash(&[&idx.to_string()]);
+        let trace_id = debank::root_trace_id(genesis_hash);
         traces.push(DebankTrace {
             id: trace_id,
             from_addr: Address::zero(),
@@ -599,8 +601,7 @@ async fn process_historical_block(
                 .await?;
 
             if let Some(CallTracerResult::CallTrace(debug_call)) = trace_result {
-                let root_trace_id =
-                    debank::to_hash(&[tx.hash.to_string().as_str(), "", "0"]);
+                let root_trace_id = debank::root_trace_id(tx.hash);
                 flatten_debug_call_to_debank_traces(
                     &debug_call,
                     tx.hash,
@@ -730,7 +731,7 @@ fn flatten_debug_call_to_debank_traces(
 
     for (i, subcall) in debug_call.calls.iter().enumerate() {
         let child_trace_id = debank::to_hash(&[
-            tx_hash.to_string().as_str(),
+            &format!("{tx_hash:#x}"),
             trace_id,
             &(i as u32).to_string(),
         ]);

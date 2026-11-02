@@ -13,14 +13,9 @@ use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
 use tokio::task::JoinHandle;
 use zksync_multivm::{interface::TxExecutionStatus, tracers::debank};
 use zksync_types::{
-    debank::{
-        BlockFile, DebankBlock, DebankOutPut, DebankTransaction, Header,
-        KafkaBlockChangeNotification, KafkaBlockContext,
-    },
-    l2::TransactionType,
-    utils::deployed_address_evm_create,
+    debank::{DebankOutPut, Header, KafkaBlockChangeNotification, KafkaBlockContext},
     web3::Bytes,
-    Address, ExecuteTransactionCommon, H256, U256,
+    H256,
 };
 
 use crate::{io::output_handler::StateKeeperOutputHandler, updates::UpdatesManager};
@@ -287,166 +282,42 @@ impl DebankS3OutputHandler {
 
     fn build_debank_output(&self, updates_manager: &UpdatesManager) -> DebankOutPut {
         let block = updates_manager.last_pending_l2_block();
-        let l2_header = updates_manager.header_for_first_pending_block();
-        let base_fee = l2_header.base_fee_per_gas;
-
-        let block_hash = l2_header.hash;
-        let block_number = l2_header.number.0 as u64;
-        let block_timestamp = l2_header.timestamp;
-
-        let mut debank_transactions = Vec::new();
-        let mut all_traces = Vec::new();
-        let mut all_events = Vec::new();
-        let mut all_error_traces = Vec::new();
-        let mut all_error_events = Vec::new();
-        let mut global_log_index: u32 = 0;
-
-        for (idx, tx_result) in block.executed_transactions.iter().enumerate() {
-            // Skip L1 and ProtocolUpgrade transactions
-            let l2_data = match &tx_result.transaction.common_data {
-                ExecuteTransactionCommon::L2(data) => data,
-                _ => continue,
-            };
-
-            let tx_hash = tx_result.hash;
-            let tx = &tx_result.transaction;
-
-            // Build DebankTransaction
-            let to_address = tx.execute.contract_address.or_else(|| {
-                Some(deployed_address_evm_create(
-                    l2_data.initiator_address,
-                    (*l2_data.nonce).into(),
-                ))
-            });
-
-            let gas_limit = l2_data.fee.gas_limit.as_u64();
-            let gas_used = gas_limit.saturating_sub(tx_result.refunded_gas);
-            let gas_price = l2_data
-                .fee
-                .get_effective_gas_price(base_fee.into())
-                .as_u64();
-
-            let (gas_fee_cap, gas_tip_cap) =
-                if l2_data.transaction_type as u32 >= TransactionType::EIP1559Transaction as u32 {
-                    (
-                        l2_data.fee.max_fee_per_gas.as_u64(),
-                        l2_data.fee.max_priority_fee_per_gas.as_u64(),
-                    )
-                } else {
-                    (0, 0)
-                };
-
-            let status = tx_result.execution_status == TxExecutionStatus::Success;
-
-            debank_transactions.push(DebankTransaction {
-                id: format!("{:#x}", tx_hash),
-                from: l2_data.initiator_address,
-                to: to_address,
-                gas_limit,
-                gas_price,
-                gas_used,
-                status,
-                gas_fee_cap,
-                gas_tip_cap,
-                input: tx.execute.calldata.clone().into(),
-                nonce: (*l2_data.nonce) as u64,
-                transaction_index: idx as u32,
-                value: tx.execute.value,
-            });
-
-            // Build traces and events from call traces
-            if !tx_result.call_traces.is_empty() {
-                if let Some(mut first_call) = tx_result.call_trace() {
-                    // Set trace_id on root call
-                    first_call.trace_id =
-                        debank::to_hash(&[tx_hash.to_string().as_str(), "", "0"]);
-
-                    // Set pos_in_parent_trace for subcalls
-                    for (i, subcall) in first_call.calls.iter_mut().enumerate() {
-                        subcall.pos_in_parent_trace = i as u32;
-                    }
-
-                    // Mark parent_failed on subcalls
-                    debank::set_parent_failed(&mut first_call, false);
-
-                    // Push root trace
-                    let root_trace =
-                        debank::to_debank_trace(&first_call, tx_hash, vec![]);
-                    if debank::effective_failed(&first_call) {
-                        all_error_traces.push(root_trace);
-                    } else {
-                        all_traces.push(root_trace);
-                    }
-
-                    // Recursively convert subcalls to traces/events
-                    debank::add_trace_log(
-                        tx_hash,
-                        &mut all_traces,
-                        &mut all_error_traces,
-                        &mut all_events,
-                        &mut all_error_events,
-                        vec![],
-                        &mut first_call,
-                    );
-
-                    // Assign per-tx log_index to events
-                    for event in all_events.iter_mut().skip(global_log_index as usize) {
-                        event.log_index = global_log_index;
-                        global_log_index += 1;
-                    }
-                    // Don't increment global_log_index for error events
-                }
-            }
-        }
-
-        // Build storage_contracts from traces with self_storage_change
-        let storage_contracts =
-            zksync_types::debank::collect_storage_contracts(&all_traces, &all_error_traces);
-
-        // Assemble BlockFile
-        let block_file = BlockFile {
-            block: DebankBlock {
-                id: block_hash,
-                height: block_number,
-                parent_id: block.prev_block_hash,
-                base_fee_per_gas: Some(base_fee),
-                gas_limit: l2_header.gas_limit,
-                gas_used: debank_transactions.iter().map(|tx| tx.gas_used).sum(),
-                timestamp: block_timestamp,
-                process_start_timestamp: block_timestamp,
-                ..Default::default()
+        let header = updates_manager.header_for_first_pending_block();
+        let txs = block
+            .executed_transactions
+            .iter()
+            .enumerate()
+            .map(|(index, result)| {
+                debank::transaction_data(
+                    &result.transaction,
+                    index as u32,
+                    header.base_fee_per_gas,
+                    result
+                        .transaction
+                        .gas_limit()
+                        .as_u64()
+                        .saturating_sub(result.refunded_gas),
+                    result.execution_status == TxExecutionStatus::Success,
+                    result.call_trace(),
+                )
+            })
+            .collect();
+        let (mut block_file, header) = zksync_types::debank::assemble_block_file(
+            zksync_types::debank::BlockMeta {
+                hash: header.hash,
+                parent_hash: block.prev_block_hash,
+                number: header.number.0 as u64,
+                timestamp: header.timestamp,
+                base_fee_per_gas: header.base_fee_per_gas,
+                gas_limit: header.gas_limit,
+                logs_bloom: header.logs_bloom,
             },
-            transactions: debank_transactions,
-            events: all_events,
-            traces: all_traces,
-            error_traces: all_error_traces,
-            error_events: all_error_events,
-            storage_contracts,
-        };
-
-        // keccak256 of RLP-encoded empty list — standard Ethereum empty uncles hash
-        let empty_uncles_hash = H256::from_slice(
-            &hex::decode("1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347")
-                .unwrap(),
+            txs,
         );
-
-        // Build Header
-        let header = Header {
-            number: block_number,
-            hash: block_hash,
-            parent_hash: block.prev_block_hash,
-            sha3_uncles: empty_uncles_hash,
-            logs_bloom: l2_header.logs_bloom,
-            gas_limit: l2_header.gas_limit,
-            gas_used: block_file.block.gas_used,
-            timestamp: block_timestamp,
-            base_fee_per_gas: Some(U256::from(base_fee)),
-            miner: Address::default(),
-            ..Default::default()
-        };
-
+        if let Some(tip) = &updates_manager.committed_updates().finished {
+            debank::append_batch_tip(&mut block_file, tip);
+        }
         let validation_hash = block_file.validation().validation_hash;
-
         DebankOutPut {
             block_file,
             header,

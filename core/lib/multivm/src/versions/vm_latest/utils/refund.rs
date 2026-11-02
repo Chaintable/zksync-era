@@ -27,6 +27,12 @@ pub(crate) fn compute_refund(
     // For now, bootloader charges only for base fee.
     let effective_gas_price = get_batch_base_fee(l1_batch);
 
+    if effective_gas_price == 0 {
+        // Lens's historical gasless batches pay no fee to convert back into
+        // gas. Preserve the bootloader's refund, including its memory value.
+        return bootloader_refund;
+    }
+
     let bootloader_eth_price_per_pubdata_byte =
         U256::from(effective_gas_price) * U256::from(current_ergs_per_pubdata_byte);
 
@@ -62,4 +68,36 @@ pub(crate) fn compute_refund(
     tracing::trace!("Pubdata published: {}", pubdata_published);
 
     ceil_div_u256(refund_eth, effective_gas_price.into()).as_u64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interface::L2BlockEnv;
+    use zksync_types::{fee_model::BatchFeeInput, L1BatchNumber};
+
+    #[test]
+    fn gasless_batch_preserves_the_bootloader_refund() {
+        let batch = L1BatchEnv {
+            previous_batch_hash: None,
+            number: L1BatchNumber(1),
+            timestamp: 1,
+            fee_input: BatchFeeInput::pubdata_independent(0, 0, 0),
+            enforced_base_fee: Some(0),
+            fee_account: Default::default(),
+            first_l2_block: L2BlockEnv {
+                number: 1,
+                timestamp: 1,
+                prev_block_hash: H256::zero(),
+                max_virtual_blocks_to_create: 1,
+                interop_roots: vec![],
+            },
+            settlement_layer: Default::default(),
+            interop_fee: Default::default(),
+        };
+        assert_eq!(
+            compute_refund(&batch, 333, 12, 1000, 1, 12, H256::zero()),
+            333
+        );
+    }
 }

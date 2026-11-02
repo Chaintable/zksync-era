@@ -45,6 +45,7 @@ impl GlueFrom<crate::vm_m5::vm_instance::VmBlockResult> for crate::interface::Fi
                 refunds: Refunds::default(),
                 dynamic_factory_deps: HashMap::new(),
             },
+            block_tip_call_traces: vec![],
             final_execution_state: CurrentExecutionState {
                 events: value.full_result.events,
                 deduplicated_storage_logs: deduplicated_storage_logs
@@ -97,6 +98,7 @@ impl GlueFrom<crate::vm_m6::vm_instance::VmBlockResult> for crate::interface::Fi
                 refunds: Refunds::default(),
                 dynamic_factory_deps: HashMap::new(),
             },
+            block_tip_call_traces: vec![],
             final_execution_state: CurrentExecutionState {
                 events: value.full_result.events,
                 deduplicated_storage_logs: deduplicated_storage_logs
@@ -155,6 +157,7 @@ impl GlueFrom<crate::vm_1_3_2::vm_instance::VmBlockResult> for crate::interface:
                 refunds: Refunds::default(),
                 dynamic_factory_deps: HashMap::new(),
             },
+            block_tip_call_traces: vec![],
             final_execution_state: CurrentExecutionState {
                 events: value.full_result.events,
                 deduplicated_storage_logs: deduplicated_storage_logs

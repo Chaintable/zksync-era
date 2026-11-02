@@ -4,7 +4,7 @@ pub use self::{
     bytecode::CompressedBytecodeInfo,
     cycle_features::{FeatureId, FeatureVector, FeatureVectorExt, SAFETY_CRITICAL_FEATURES},
     execution_result::{
-        BatchTransactionExecutionResult, Call, CallType, ExecutionResult,
+        BatchTransactionExecutionResult, Call, CallEventMetadata, CallType, ExecutionResult,
         OneshotTransactionExecutionResult, Refunds, TransactionExecutionResult, TxExecutionStatus,
         VmEvent, VmExecutionLogs, VmExecutionResultAndLogs,
     },

@@ -10,6 +10,8 @@ pub(crate) struct SolidityLikeEvent {
     pub(crate) address: Address,
     pub(crate) topics: Vec<[u8; 32]>,
     pub(crate) data: Vec<u8>,
+    pub(crate) timestamp: u32,
+    pub(crate) reverted: bool,
 }
 
 impl SolidityLikeEvent {
@@ -24,11 +26,13 @@ impl SolidityLikeEvent {
     }
 }
 
-fn merge_events_inner(events: Vec<EventMessage>) -> Vec<SolidityLikeEvent> {
+fn merge_events_inner(
+    events: impl IntoIterator<Item = (EventMessage, u32, bool)>,
+) -> Vec<SolidityLikeEvent> {
     let mut result = vec![];
     let mut current: Option<(usize, u32, SolidityLikeEvent)> = None;
 
-    for message in events.into_iter() {
+    for (message, timestamp, reverted) in events {
         if !message.is_first {
             let EventMessage {
                 shard_id,
@@ -42,6 +46,7 @@ fn merge_events_inner(events: Vec<EventMessage>) -> Vec<SolidityLikeEvent> {
             if let Some((mut remaining_data_length, mut remaining_topics, mut event)) =
                 current.take()
             {
+                event.reverted |= reverted;
                 if event.address != address
                     || event.shard_id != shard_id
                     || event.tx_number_in_block != tx_number_in_block
@@ -111,6 +116,8 @@ fn merge_events_inner(events: Vec<EventMessage>) -> Vec<SolidityLikeEvent> {
                 address,
                 topics,
                 data,
+                timestamp,
+                reverted,
             };
 
             current = Some((data_length, num_topics, new_event))
@@ -128,11 +135,17 @@ fn merge_events_inner(events: Vec<EventMessage>) -> Vec<SolidityLikeEvent> {
 }
 
 pub(crate) fn merge_events(events: Vec<EventMessage>) -> Vec<SolidityLikeEvent> {
+    merge_events_with_metadata(events.into_iter().map(|event| (event, 0, false)))
+}
+
+pub(crate) fn merge_events_with_metadata(
+    events: impl IntoIterator<Item = (EventMessage, u32, bool)>,
+) -> Vec<SolidityLikeEvent> {
     let raw_events = merge_events_inner(events);
 
     raw_events
         .into_iter()
-        .filter(|e| e.address == EVENT_WRITER_ADDRESS)
+        .filter(|e| e.address == EVENT_WRITER_ADDRESS && !e.topics.is_empty())
         .map(|event| {
             // The events writer events where the first topic is the actual address of the event and the rest of the topics are real topics
             let address = h256_to_address(&H256(event.topics[0]));

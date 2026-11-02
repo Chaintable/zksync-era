@@ -121,6 +121,7 @@ mod tests {
             address: from,
             indexed_topics: vec![l1_messenger_l2_to_l1_log_event_signature],
             value: create_l2_to_l1_log_sent_value(tx_number, sender, key, value),
+            position: 0,
         }
     }
 
@@ -218,6 +219,7 @@ mod tests {
             address: from,
             indexed_topics: vec![bytecode_publication_event_signature],
             value: create_byte_code_publication_req_value(hash),
+            position: 0,
         }
     }
 

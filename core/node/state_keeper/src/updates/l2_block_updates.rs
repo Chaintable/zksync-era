@@ -105,6 +105,11 @@ impl L2BlockUpdates {
             TxExecutionStatus::Success
         };
 
+        let output = match &tx_execution_result.result {
+            ExecutionResult::Success { output } => output.clone(),
+            ExecutionResult::Revert { output } => output.encoded_data(),
+            ExecutionResult::Halt { .. } => vec![],
+        };
         let revert_reason = match &tx_execution_result.result {
             ExecutionResult::Success { .. } => {
                 KEEPER_METRICS.inc_succeeded_txs();
@@ -172,6 +177,7 @@ impl L2BlockUpdates {
             refunded_gas: gas_refunded,
             call_traces,
             revert_reason,
+            output,
         });
     }
 

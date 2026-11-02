@@ -1,6 +1,7 @@
 use std::{convert::TryInto, str::FromStr};
 
 use bigdecimal::Zero;
+use bincode::Options as _;
 use sqlx::types::chrono::{DateTime, NaiveDateTime, Utc};
 use zksync_types::{
     api::{self, TransactionDetails, TransactionReceipt, TransactionStatus},
@@ -18,7 +19,7 @@ use zksync_types::{
 };
 use zksync_vm_interface::Call;
 
-use super::call::{LegacyCall, LegacyMixedCall};
+use super::call::{LegacyCall, LegacyCall25, LegacyMixedCall, StoredCallV1};
 use crate::{
     models::bigdecimal_to_u256, transactions_web3_dal::ExtendedTransactionReceipt, BigDecimal,
 };
@@ -622,7 +623,9 @@ impl CallTrace {
 }
 
 pub(crate) fn parse_call_trace(call_trace: &[u8], protocol_version: ProtocolVersionId) -> Call {
-    if protocol_version.is_pre_1_5_0() {
+    if let Some(bytes) = call_trace.strip_prefix(CALL_TRACE_V2_PREFIX) {
+        bincode::deserialize(bytes).expect("Failed to deserialize versioned call trace")
+    } else if protocol_version.is_pre_1_5_0() {
         if let Ok(legacy_call_trace) = bincode::deserialize::<LegacyCall>(call_trace) {
             legacy_call_trace.into()
         } else {
@@ -631,7 +634,22 @@ pub(crate) fn parse_call_trace(call_trace: &[u8], protocol_version: ProtocolVers
             legacy_mixed_call_trace.into()
         }
     } else {
-        bincode::deserialize(call_trace).unwrap()
+        // Bound decoding attempts: treating the next field of a different legacy
+        // layout as a vector length must not result in an unbounded allocation.
+        let options = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(call_trace.len() as u64)
+            .reject_trailing_bytes();
+        match options.deserialize::<StoredCallV1>(call_trace) {
+            Ok(call) => call.into(),
+            Err(error) if protocol_version == ProtocolVersionId::Version25 => options
+                .deserialize::<LegacyCall25>(call_trace)
+                .unwrap_or_else(|legacy_error| {
+                    panic!("Failed to deserialize v25 call trace: {error}; {legacy_error}")
+                })
+                .into(),
+            Err(error) => panic!("Failed to deserialize legacy DeBank call trace: {error}"),
+        }
     }
 }
 
@@ -640,9 +658,83 @@ pub(crate) fn serialize_call_into_bytes(
     protocol_version: ProtocolVersionId,
 ) -> Vec<u8> {
     if protocol_version.is_pre_1_5_0() {
-        bincode::serialize(&LegacyCall::try_from(call).unwrap())
+        bincode::serialize(&LegacyCall::try_from(call).unwrap()).unwrap()
     } else {
-        bincode::serialize(&call)
+        let mut bytes = CALL_TRACE_V2_PREFIX.to_vec();
+        bytes.extend(bincode::serialize(&call).unwrap());
+        bytes
     }
-    .unwrap()
+}
+
+// A format version is separate from the chain protocol version: traces from the
+// same protocol can have been collected by different Writer releases.
+const CALL_TRACE_V2_PREFIX: &[u8] = b"CTCALL2\0";
+
+#[cfg(test)]
+mod call_trace_format_tests {
+    use zksync_vm_interface::{CallEventMetadata, VmEvent};
+
+    use super::*;
+
+    #[test]
+    fn execution_metadata_round_trips_recursively() {
+        let call = Call {
+            calls: vec![Call {
+                events: vec![VmEvent::default()],
+                event_metadata: vec![CallEventMetadata {
+                    timestamp: 42,
+                    reverted: true,
+                }],
+                parent_failed: true,
+                ..Call::default()
+            }],
+            ..Call::default()
+        };
+        let bytes = serialize_call_into_bytes(call, ProtocolVersionId::Version25);
+        assert!(bytes.starts_with(CALL_TRACE_V2_PREFIX));
+        let restored = parse_call_trace(&bytes, ProtocolVersionId::Version25);
+        assert!(restored.calls[0].parent_failed);
+        assert_eq!(restored.calls[0].event_metadata[0].timestamp, 42);
+        assert!(restored.calls[0].event_metadata[0].reverted);
+    }
+
+    #[test]
+    fn existing_debank_calls_remain_readable() {
+        let call = Call {
+            error: Some("Panic".into()),
+            calls: vec![Call {
+                self_storage_change: true,
+                ..Call::default()
+            }],
+            ..Call::default()
+        };
+        let bytes = bincode::serialize(&StoredCallV1::from(call)).unwrap();
+        let restored = parse_call_trace(&bytes, ProtocolVersionId::Version26);
+        assert_eq!(restored.error.as_deref(), Some("Panic"));
+        assert!(restored.calls[0].self_storage_change);
+        assert!(restored.event_metadata.is_empty());
+    }
+
+    #[test]
+    fn official_v25_calls_do_not_claim_execution_metadata() {
+        let call = LegacyCall25 {
+            r#type: Default::default(),
+            from: Default::default(),
+            to: Default::default(),
+            parent_gas: 100,
+            gas: 90,
+            gas_used: 10,
+            value: Default::default(),
+            input: vec![],
+            output: vec![],
+            error: Some("Panic".into()),
+            revert_reason: None,
+            calls: vec![],
+        };
+        let bytes = bincode::serialize(&call).unwrap();
+        let restored = parse_call_trace(&bytes, ProtocolVersionId::Version25);
+        assert_eq!(restored.gas, 90);
+        assert_eq!(restored.error.as_deref(), Some("Panic"));
+        assert!(restored.event_metadata.is_empty());
+    }
 }
