@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use structopt::StructOpt;
 use tokio::runtime::Handle;
-use zksync_dal::{ConnectionPool, Core, CoreDal};
+use zksync_dal::{archive_replay::ArchiveReplayReader, ConnectionPool, Core, CoreDal};
 use zksync_multivm::{
     interface::{Call, ExecutionResult, L2BlockEnv, VmFactory, VmInterface},
     pubdata_builders::pubdata_params_to_builder,
@@ -34,9 +34,10 @@ use zksync_types::{
     api::GetLogsFilter,
     debank::{assemble_block_file, BlockMeta},
     url::SensitiveUrl,
-    AccountTreeId, Address, L1BatchNumber, L2ChainId, ProtocolVersionId, StorageKey, H256, U256,
+    AccountTreeId, Address, L1BatchNumber, L2BlockNumber, L2ChainId, ProtocolVersionId, StorageKey,
+    H256, U256,
 };
-use zksync_vm_executor::storage::L1BatchParamsProvider;
+use zksync_vm_executor::storage::{get_base_system_contracts, l1_batch_params, RestoredL1BatchEnv};
 use zksync_vm_interface::{
     storage::{ReadStorage, StorageView},
     VmEvent,
@@ -119,13 +120,8 @@ fn replay(pool: ConnectionPool<Core>, args: &Args, batch: u32, rt: Handle) -> an
     )?;
     let pruning = rt.block_on(db.pruning_dal().get_pruning_info())?;
     let batch_number = L1BatchNumber(batch);
-    let provider = rt.block_on(L1BatchParamsProvider::new(&mut db))?;
-    let mut first = rt
-        .block_on(provider.load_first_l2_block_in_batch(&mut db, batch_number))?
-        .context("batch is absent from archive PG")?;
-    let batch_header = rt
-        .block_on(db.blocks_dal().get_l1_batch_header(batch_number))?
-        .context("sealed batch header is missing")?;
+    let reader = rt.block_on(ArchiveReplayReader::new(&mut db))?;
+    let batch_header = rt.block_on(reader.batch_header(&mut db, batch_number))?;
     let protocol = batch_header
         .protocol_version
         .context("batch protocol version is missing")?;
@@ -133,56 +129,78 @@ fn replay(pool: ConnectionPool<Core>, args: &Args, batch: u32, rt: Handle) -> an
         protocol >= ProtocolVersionId::Version25,
         "this collector requires protocol 25 or newer"
     );
-    if !first.has_protocol_version() {
-        first.set_protocol_version(protocol);
-    }
-    let previous = first.number() - 1;
+    let (from, to) = rt
+        .block_on(db.blocks_dal().get_l2_block_range_of_l1_batch(batch_number))?
+        .context("batch has no L2 blocks")?;
+    let previous = from - 1;
     ensure!(
         pruning
             .last_hard_pruned
             .is_none_or(|pruned| pruned.l2_block < previous),
         "archive state before this batch has been pruned"
     );
-    let restored = rt.block_on(provider.load_l1_batch_params(
-        &mut db,
-        &first,
-        u32::MAX,
-        L2ChainId::try_from(args.chain_id).map_err(anyhow::Error::msg)?,
-    ))?;
-    let blocks = rt.block_on(
-        db.transactions_dal()
-            .get_l2_blocks_to_execute_for_l1_batch(batch_number),
-    )?;
-    let (from, to) = rt
-        .block_on(db.blocks_dal().get_l2_block_range_of_l1_batch(batch_number))?
-        .context("batch has no L2 blocks")?;
-    ensure!(
-        blocks.len() == (to.0 - from.0 + 1) as usize,
-        "L2 block coverage is incomplete"
-    );
     let mut headers = vec![];
-    for (index, block) in blocks.iter().enumerate() {
-        ensure!(
-            block.number.0 == from.0 + index as u32,
-            "non-contiguous L2 blocks"
-        );
-        let header = rt
-            .block_on(db.blocks_dal().get_l2_block_header(block.number))?
-            .context("L2 header is missing")?;
+    for number in from.0..=to.0 {
+        headers.push(rt.block_on(reader.block_header(&mut db, L2BlockNumber(number), protocol))?);
+    }
+    let blocks = rt.block_on(reader.execution_data(&mut db, &headers, protocol))?;
+    for (block, header) in blocks.iter().zip(&headers) {
         ensure!(
             block.txs.len() == (header.l1_tx_count + header.l2_tx_count) as usize,
             "raw transaction coverage is incomplete at block {}",
             block.number
         );
-        if let Some(previous_header) = headers.last() {
-            let previous_header: &zksync_types::block::L2BlockHeader = previous_header;
-            ensure!(
-                block.prev_block_hash == previous_header.hash,
-                "canonical parent hash mismatch"
-            );
-        }
-        headers.push(header);
     }
+    // Offline replay must fail on absent roots, rather than wait for a live
+    // tree worker that is not running against this immutable archive.
+    let (previous_root, previous_timestamp) = rt.block_on(
+        sqlx::query_as::<_, (Option<Vec<u8>>, i64)>(
+            "SELECT hash, timestamp FROM l1_batches WHERE number = $1 AND is_sealed",
+        )
+        .bind(i64::from(batch - 1))
+        .fetch_one(db.conn()),
+    )?;
+    let previous_root = previous_root.context("previous batch state root is missing")?;
+    ensure!(
+        previous_root.len() == 32,
+        "invalid previous batch state root"
+    );
+    ensure!(
+        previous_timestamp < batch_header.timestamp as i64,
+        "previous batch timestamp is not earlier than this batch"
+    );
+    let first = &headers[0];
+    let hashes = first.base_system_contracts_hashes;
+    let base_contracts = rt.block_on(get_base_system_contracts(
+        &mut db,
+        Some(protocol),
+        hashes.bootloader,
+        hashes.default_aa,
+        hashes.evm_emulator,
+    ))?;
+    let (system_env, l1_batch_env) = l1_batch_params(
+        batch_number,
+        first.fee_account_address,
+        batch_header.timestamp,
+        H256::from_slice(&previous_root),
+        first.batch_fee_input,
+        first.number,
+        blocks[0].prev_block_hash,
+        base_contracts,
+        u32::MAX,
+        protocol,
+        first.virtual_blocks,
+        L2ChainId::try_from(args.chain_id).map_err(anyhow::Error::msg)?,
+        batch_header.settlement_layer,
+        blocks[0].interop_roots.clone(),
+        batch_header.interop_fee,
+    );
+    let restored = RestoredL1BatchEnv {
+        system_env,
+        l1_batch_env,
+        pubdata_params: first.pubdata_params,
+        pubdata_limit: batch_header.pubdata_limit,
+    };
     ensure!(
         blocks.last().unwrap().txs.is_empty(),
         "batch has no fictive final block"
@@ -306,10 +324,15 @@ fn replay(pool: ConnectionPool<Core>, args: &Args, batch: u32, rt: Handle) -> an
         AccountTreeId::new(zksync_system_constants::SYSTEM_CONTEXT_ADDRESS),
         H256::zero(),
     );
-    ensure!(
-        U256::from_big_endian(storage.read_value(&chain_id_key).as_bytes()) == args.chain_id.into(),
-        "chain ID in the restored state differs from --chain-id"
-    );
+    let chain_id_before = U256::from_big_endian(storage.read_value(&chain_id_key).as_bytes());
+    let chain_id_transition = validate_chain_id_transition(
+        chain_id_before,
+        args.chain_id.into(),
+        storage.get_enumeration_index(&chain_id_key),
+        expected_writes
+            .get(&chain_id_key.hashed_key())
+            .map(|(_, value)| U256::from_big_endian(value.as_bytes())),
+    )?;
     let storage = StorageView::new(storage).to_rc_ptr();
     let pubdata_builder = pubdata_params_to_builder(restored.pubdata_params, protocol);
     let mut vm =
@@ -430,13 +453,17 @@ fn replay(pool: ConnectionPool<Core>, args: &Args, batch: u32, rt: Handle) -> an
     finished.block_tip_call_traces = tip_calls.clone();
     // Batch-tip execution has no ordinary transaction. Keep its actual frames
     // and events explicitly, rather than manufacturing a tx with zero hash.
+    // VM statistics collect these hashes from a HashMap. Their set order is
+    // not execution order and must not leak process randomness into artifacts.
+    let mut used_contract_hashes = finished.final_execution_state.used_contract_hashes.clone();
+    used_contract_hashes.sort_unstable();
     files.insert("execution.json".into(), write_json(&staging.join("execution.json"), &serde_json::json!({
         "transactions": raw_transactions, "batch_tip_calls": tip_calls,
         "batch_tip_result": format!("{:?}", finished.block_tip_execution_result.result),
         "batch_tip_trace_complete": traces.get().is_some(),
         "batch_tip_events": finished.block_tip_execution_result.logs.events,
         "final_storage_logs": finished.final_execution_state.deduplicated_storage_logs,
-        "used_contract_hashes": finished.final_execution_state.used_contract_hashes,
+        "used_contract_hashes": used_contract_hashes,
         "final_bootloader_memory": finished.final_bootloader_memory,
         "batch_tip_dynamic_factory_deps": finished.block_tip_execution_result.dynamic_factory_deps.iter().collect::<BTreeMap<_, _>>(),
     }))?);
@@ -455,6 +482,10 @@ fn replay(pool: ConnectionPool<Core>, args: &Args, batch: u32, rt: Handle) -> an
     let expected = logs_key(&logs);
     drop(vm);
     let mut storage = storage.borrow_mut();
+    ensure!(
+        U256::from_big_endian(storage.read_value(&chain_id_key).as_bytes()) == args.chain_id.into(),
+        "VM final chain ID differs from --chain-id"
+    );
     let mut expected_changes = BTreeMap::new();
     for (hash, (key, value)) in expected_writes {
         if storage.inner_mut().read_value(&key) != value {
@@ -524,6 +555,7 @@ fn replay(pool: ConnectionPool<Core>, args: &Args, batch: u32, rt: Handle) -> an
             "format": FORMAT, "input_sha256": input_hash, "files": files,
             "generator_sha256": args.generator_sha256, "reference": "restored_archive_pg",
             "chain_id": args.chain_id, "protocol_version": protocol,
+            "chain_id_before": chain_id_before, "chain_id_transition": chain_id_transition,
             "batch": batch, "from_block": from.0, "to_block": to.0,
             "execution_verified": true, "state_root_recomputed": false,
             "state_writes_verified": true,
@@ -535,6 +567,24 @@ fn replay(pool: ConnectionPool<Core>, args: &Args, batch: u32, rt: Handle) -> an
     fs::rename(&staging, &destination)?;
     fs::File::open(&args.output_dir)?.sync_all()?;
     Ok(())
+}
+
+/// A mismatching pre-state is only usable if the recorded batch changes an
+/// existing chain ID to the requested one. VM execution must reproduce it.
+fn validate_chain_id_transition(
+    before: U256,
+    requested: U256,
+    enumeration_index: Option<u64>,
+    recorded_after: Option<U256>,
+) -> anyhow::Result<bool> {
+    if before == requested {
+        return Ok(false);
+    }
+    ensure!(
+        !before.is_zero() && enumeration_index.is_some() && recorded_after == Some(requested),
+        "chain ID differs from --chain-id without an indexed historical transition to it"
+    );
+    Ok(true)
 }
 
 fn set_batch_number(call: &mut Call, batch: L1BatchNumber) {
@@ -606,4 +656,27 @@ async fn main() -> anyhow::Result<()> {
     pool.close().await;
     result??;
     Ok(())
+}
+
+#[cfg(test)]
+mod chain_id_tests {
+    use super::*;
+
+    #[test]
+    fn recorded_transition_keeps_wrong_chain_and_missing_state_rejected() {
+        let before = U256::from(271);
+        let requested = U256::from(232);
+        assert!(!validate_chain_id_transition(requested, requested, Some(1), None).unwrap());
+        assert!(validate_chain_id_transition(before, requested, Some(1), Some(requested)).unwrap());
+        assert!(
+            validate_chain_id_transition(before, U256::from(233), Some(1), Some(requested))
+                .is_err()
+        );
+        assert!(validate_chain_id_transition(before, requested, Some(1), None).is_err());
+        assert!(validate_chain_id_transition(before, requested, None, Some(requested)).is_err());
+        assert!(
+            validate_chain_id_transition(U256::zero(), requested, Some(1), Some(requested))
+                .is_err()
+        );
+    }
 }

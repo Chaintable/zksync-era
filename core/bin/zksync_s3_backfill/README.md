@@ -1,6 +1,8 @@
 # DeBank execution reconstruction
 
-`debank_execution_replay` executes sealed L1 batches from a restored archive PostgreSQL database. It does not read stored Call blobs, insert traces, upload to S3, send Kafka messages, or persist new chain state. PostgreSQL operations run in a read-only, repeatable-read transaction. Use an isolated restored database whose schema matches this Writer version.
+`debank_execution_replay` executes sealed L1 batches from a restored archive PostgreSQL database. It does not read stored Call blobs, insert traces, upload to S3, send Kafka messages, or persist new chain state. PostgreSQL operations run in a read-only, repeatable-read transaction. Use an isolated restored database.
+
+The offline reader also supports the pre-interop v25 archive schema without running migrations or creating views. It resolves tables through the connection's search path, preserves present fields and interop roots, and supplies only the native migration defaults for absent later fields: nullable rolling transaction hash, DA commitment scheme and pubdata limit, plus L1 settlement, settlement chain ID 1 and zero interop fee. Missing fields or an absent interop table are rejected for other protocols.
 
 The archive must contain original transactions, batch environments, system bytecodes, historical storage values, initial-write batch numbers and enumeration indices. Pruned history is rejected. This command cannot extend an incomplete archive by reading its latest state; restore / synchronize the missing archive history first.
 
@@ -12,7 +14,11 @@ cargo run --release -p zksync_s3_backfill --bin debank_execution_replay -- \
 
 The range is inclusive. Protocols 25 and later use the fixed EraVM collector; the external-node Writer also uses this VM and enables call tracing when `DEBANK_S3_ENABLED` is set. This change does not add complete event collection to the optional fast VM.
 
+`--chain-id` identifies the batch being executed. A different pre-state chain ID is accepted only when it is nonzero, has a historical enumeration index, and this batch records a write to the requested ID. The VM must reproduce that transition and end with the requested ID; the manifest records the prior ID and whether a transition was required. A missing previous batch root is an immediate input error.
+
 Each locally committed batch directory contains original inputs, transaction execution records, original event emission identities / rollback metadata, batch-tip calls, final storage logs, the historical slots read during execution, per-block BlockFile / Header / full Validation, and a SHA256 manifest. The batch tip is executed with a tracer. Its calls and events are block-scoped (`tx_id` is empty), with identities derived from the canonical block hash; no ordinary fictive transaction is invented.
+
+Unordered used-contract hashes are sorted before serialization. Calls, events and storage logs retain their execution order.
 
 Generation compares transaction coverage/order, status, gas, effective gas price, committed events (including duplicates/order) and net storage changes with the restored PG. Raw event identities and physical rollback are also checked against VM committed logs before export classification. The established protocol still classifies descendants of a failed transaction summary as error records, including committed fee/refund logs; receipt presence does not override that classification. Serialized graphs are checked for unique IDs/paths, parent closure, identity formulas and mixed child positions. These are PG comparisons, not independent chain verification or a recomputed state root. The manifest therefore records `canonical_publish_ready=false`. Validate the frozen source against canonical chain evidence, all actual protocol transitions, genesis, batch 2, batches 2554/2555 and 3590/3591, and real failing executions before publishing. Consumer acceptance of block-scoped system records must also be verified. No StateDiff is exported.
 

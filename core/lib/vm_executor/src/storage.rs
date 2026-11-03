@@ -415,7 +415,8 @@ impl L1BatchParamsProvider {
     }
 }
 
-async fn get_base_system_contracts(
+/// Loads the exact contract hashes recorded by a block, including upgrade deps.
+pub async fn get_base_system_contracts(
     storage: &mut Connection<'_, Core>,
     protocol_version: Option<ProtocolVersionId>,
     bootloader_hash: H256,
