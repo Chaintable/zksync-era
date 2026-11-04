@@ -16,6 +16,7 @@ use crate::config::{generate_consensus_secrets, ExternalNodeConfig, LocalConfig}
 
 mod config;
 mod etcd_register;
+mod export_state_diffs;
 mod metadata;
 mod metrics;
 mod node_builder;
@@ -38,6 +39,8 @@ enum Command {
         /// The last L1 batch to be retained after the revert.
         l1_batch: L1BatchNumber,
     },
+    /// Export state diffs from PostgreSQL archive storage logs to S3.
+    ExportStateDiffs(export_state_diffs::ExportStateDiffsArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -254,6 +257,10 @@ fn main() -> anyhow::Result<()> {
             Command::Revert { l1_batch } => {
                 // We need to delay revert to after the config is fully read.
                 revert_to_l1_batch = Some(l1_batch);
+            }
+            Command::ExportStateDiffs(args) => {
+                let _rt_guard = runtime.enter();
+                return runtime.block_on(args.run());
             }
         }
     }
