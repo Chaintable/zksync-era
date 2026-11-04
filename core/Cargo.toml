@@ -110,7 +110,9 @@ categories = ["cryptography"]
 
 [workspace.dependencies]
 # "External" dependencies
-alloy-primitives = "1.4.1"
+alloy-primitives = { version = "1.4.1", features = ["rlp"] }
+alloy-rlp = "0.3.12"
+alloy-rlp-derive = "0.3.12"
 alloy-rpc-types = { version = "1.0", default-features = false, features = ["eth"] }
 alloy-signer = "1.0"
 alloy-signer-gcp = "1.0"

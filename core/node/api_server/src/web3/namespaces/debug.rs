@@ -1629,6 +1629,7 @@ impl DebugNamespace {
         let mut debank_errtraces = vec![];
         let mut debank_events = vec![];
         let mut debank_errevents = vec![];
+        let mut all_write_logs = vec![];
         let mut accumulated_override: Option<StateOverride> = None;
         for (idx, l2_tx) in l2_transactions.iter().enumerate() {
             let vm_permit = self
@@ -1662,6 +1663,7 @@ impl DebugNamespace {
             match result {
                 Ok(execution_result) => {
                     let mut tx_events = Vec::new();
+                    all_write_logs.extend(execution_result.write_logs.clone());
                     let next_override = Self::state_override_from_write_logs(&execution_result.write_logs);
                     accumulated_override = Some(match accumulated_override.take() {
                         None => next_override,
@@ -1751,7 +1753,6 @@ impl DebugNamespace {
                     for (i, subcall) in first_call.calls.iter_mut().enumerate() {
                         subcall.pos_in_parent_trace = i as u32;
                     }
-
                     debank::set_parent_failed(&mut first_call, false);
                     let root_trace = debank::to_debank_trace(&first_call, l2_tx.hash(), vec![]);
                     if debank::effective_failed(&first_call) {
@@ -1831,11 +1832,27 @@ impl DebugNamespace {
             ..Default::default()
         };
 
+            let mut new_factory_deps: HashMap<H256, &[u8]> = HashMap::new();
+            for l2_tx in &l2_transactions {
+                for dep in &l2_tx.execute.factory_deps {
+                    let hash = zksync_types::bytecode::BytecodeHash::for_bytecode(dep).value();
+                    new_factory_deps.insert(hash, dep.as_slice());
+                }
+            }
+
+            let state_diff = zksync_types::debank::build_state_diff(
+                l2_block.hash,
+                l2_block.parent_hash,
+                all_write_logs.into_iter().map(|log| (log.key, log.value)),
+                new_factory_deps.iter().map(|(h, c)| (h, *c)),
+            );
+            let state_diff_bytes = state_diff.encode_rlp();
+
             Ok(DebankOutPut {
                 header,
                 validation_hash: block_file.validation().validation_hash,
                 block_file,
-                state_diff: vec![].into(),
+                state_diff: state_diff_bytes.into(),
             })
         };
 

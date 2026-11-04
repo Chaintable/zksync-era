@@ -1,8 +1,17 @@
-use crate::{Address, H256, H64, U256};
+use crate::{
+    storage::{log::StorageLogWithPreviousValue, StorageKey, StorageValue},
+    Address, H256, H64, U256,
+};
+use alloy_primitives::{keccak256, B256, Bytes as AlloyBytes, U256 as AlloyU256};
+use alloy_rlp::Encodable;
+use alloy_rlp_derive::{RlpDecodable, RlpEncodable};
 use hex;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use std::{collections::HashSet, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 use zksync_basic_types::{web3::Bytes, Bloom};
 
 mod hex_u64 {
@@ -279,9 +288,141 @@ pub struct KafkaBlockChangeNotification {
     pub drop_blocks: Vec<KafkaBlockContext>,
 }
 
+
+#[derive(Debug, Clone, PartialEq, RlpDecodable, RlpEncodable, Default)]
+pub struct BlockStorageDiff {
+    /// Block root hash.
+    pub hash: B256,
+    /// Parent block root hash.
+    pub parent_hash: B256,
+    /// New accounts
+    pub new_accounts: Vec<NewAccount>,
+    /// Deleted accounts
+    pub deleted_accounts: Vec<B256>,
+    /// Account storage diff
+    pub storage_diffs: Vec<AccountStorageDiff>,
+    /// New codes
+    pub new_codes: Vec<NewCode>,
+}
+
+impl BlockStorageDiff {
+    pub fn encode_rlp(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.encode(&mut buf);
+        buf
+    }
+}
+
+/// Builds a [`BlockStorageDiff`] from deduplicated write logs and new factory dependencies.
+/// Slot keys and account addresses are hashed with keccak256 to align with standard EVM
+/// state storage indexing used across DeBank / leafage-evm.
+pub fn build_state_diff<'a>(
+    block_hash: H256,
+    prev_block_hash: H256,
+    writes: impl IntoIterator<Item = (StorageKey, StorageValue)>,
+    new_factory_deps: impl IntoIterator<Item = (&'a H256, &'a [u8])>,
+) -> BlockStorageDiff {
+    let mut modified_slots: HashMap<Address, HashMap<H256, H256>> = HashMap::new();
+
+    for (key, value) in writes {
+        let addr = *key.address();
+        let slot = *key.key();
+        modified_slots.entry(addr).or_default().insert(slot, value);
+    }
+
+    let mut storage_diffs = Vec::with_capacity(modified_slots.len());
+    for (addr, slots) in modified_slots {
+        let mut diffs = Vec::with_capacity(slots.len());
+        for (key, val) in slots {
+            diffs.push(IndexValuePair {
+                index: keccak256(key.as_bytes()),
+                value: AlloyU256::from_be_bytes(val.to_fixed_bytes()),
+            });
+        }
+        diffs.sort_by_key(|d| d.index);
+        storage_diffs.push(AccountStorageDiff {
+            address: keccak256(addr.as_bytes()),
+            diffs,
+        });
+    }
+    storage_diffs.sort_by_key(|s| s.address);
+
+    let mut new_codes = Vec::new();
+    for (hash, code) in new_factory_deps {
+        new_codes.push(NewCode {
+            code_hash: B256::from(hash.0),
+            code: AlloyBytes::copy_from_slice(code),
+        });
+    }
+    new_codes.sort_by_key(|c| c.code_hash);
+
+    BlockStorageDiff {
+        hash: B256::from(block_hash.0),
+        parent_hash: B256::from(prev_block_hash.0),
+        new_accounts: Vec::new(),
+        deleted_accounts: Vec::new(),
+        storage_diffs,
+        new_codes,
+    }
+}
+
+/// Convenience helper to build [`BlockStorageDiff`] from a block's `storage_logs` and `new_factory_deps`.
+pub fn build_state_diff_from_logs<'a>(
+    block_hash: H256,
+    prev_block_hash: H256,
+    storage_logs: impl IntoIterator<Item = &'a StorageLogWithPreviousValue>,
+    new_factory_deps: &'a HashMap<H256, Vec<u8>>,
+) -> BlockStorageDiff {
+    let writes = storage_logs
+        .into_iter()
+        .filter(|log| log.log.is_write())
+        .map(|log| (log.log.key, log.log.value));
+    let factory_deps = new_factory_deps.iter().map(|(h, c)| (h, c.as_slice()));
+    build_state_diff(block_hash, prev_block_hash, writes, factory_deps)
+}
+
+#[derive(Debug, Clone, PartialEq, RlpDecodable, RlpEncodable)]
+pub struct NewCode {
+    pub code_hash: B256,
+    pub code: AlloyBytes,
+}
+
+#[derive(Debug, Clone, PartialEq, RlpDecodable, RlpEncodable)]
+pub struct NewAccount {
+    /// Account address
+    pub address: B256,
+    /// Account balance
+    pub balance: AlloyU256,
+    /// Account nonce
+    pub nonce: u64,
+    /// code hash
+    pub code_hash: B256,
+}
+
+#[derive(Debug, Clone, PartialEq, RlpDecodable, RlpEncodable)]
+pub struct AccountStorageDiff {
+    pub address: B256,
+    pub diffs: Vec<IndexValuePair>,
+}
+
+#[derive(Debug, Clone, PartialEq, RlpDecodable, RlpEncodable)]
+pub struct IndexValuePair {
+    pub index: B256,
+    pub value: AlloyU256,
+}
+
+#[derive(Debug, Clone, PartialEq, RlpDecodable, RlpEncodable)]
+pub struct SlimAccount {
+    pub balance: AlloyU256,
+    pub nonce: u64,
+    pub code_hash: B256,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_rlp::Decodable;
+    use crate::storage::log::StorageLog;
 
     #[test]
     fn storage_contracts_include_error_traces() {
@@ -322,5 +463,103 @@ mod tests {
         let json = serde_json::to_value(result).unwrap();
         assert_eq!(json["error_traces"].as_array().unwrap().len(), 1);
         assert_eq!(json["error_events"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_block_storage_diff_rlp_roundtrip() {
+        let diff = BlockStorageDiff {
+            hash: B256::from([1u8; 32]),
+            parent_hash: B256::from([2u8; 32]),
+            new_accounts: vec![NewAccount {
+                address: B256::from([3u8; 32]),
+                balance: AlloyU256::from(1000u64),
+                nonce: 42,
+                code_hash: B256::from([4u8; 32]),
+            }],
+            deleted_accounts: vec![B256::from([5u8; 32])],
+            storage_diffs: vec![AccountStorageDiff {
+                address: B256::from([6u8; 32]),
+                diffs: vec![IndexValuePair {
+                    index: B256::from([7u8; 32]),
+                    value: AlloyU256::from(9999u64),
+                }],
+            }],
+            new_codes: vec![NewCode {
+                code_hash: B256::from([8u8; 32]),
+                code: AlloyBytes::from(vec![0x60, 0x00, 0x60, 0x00]),
+            }],
+        };
+
+        let encoded = diff.encode_rlp();
+        assert!(!encoded.is_empty());
+
+        let mut slice = encoded.as_slice();
+        let decoded = BlockStorageDiff::decode(&mut slice).expect("Failed to decode RLP");
+        assert_eq!(diff, decoded);
+        assert!(slice.is_empty());
+    }
+
+    #[test]
+    fn test_build_state_diff_from_logs() {
+        use crate::AccountTreeId;
+
+        let contract = Address::from_low_u64_be(0x800a);
+        let key1 = H256::from_low_u64_be(1);
+        let val1 = H256::from_low_u64_be(100);
+        let val2 = H256::from_low_u64_be(200);
+
+        let storage_key1 = StorageKey::new(AccountTreeId::new(contract), key1);
+
+        let logs = vec![
+            StorageLogWithPreviousValue {
+                log: StorageLog::new_write_log(storage_key1, val1),
+                previous_value: H256::zero(),
+            },
+            // Overwrite in the same block
+            StorageLogWithPreviousValue {
+                log: StorageLog::new_write_log(storage_key1, val2),
+                previous_value: val1,
+            },
+            // Read log should be ignored
+            StorageLogWithPreviousValue {
+                log: StorageLog::new_read_log(storage_key1, val2),
+                previous_value: val2,
+            },
+        ];
+
+        let mut factory_deps = HashMap::new();
+        let code_hash = H256::from_low_u64_be(0xdead);
+        let bytecode = vec![1, 2, 3, 4];
+        factory_deps.insert(code_hash, bytecode.clone());
+
+        let block_hash = H256::from_low_u64_be(10);
+        let prev_hash = H256::from_low_u64_be(9);
+
+        let diff = build_state_diff_from_logs(block_hash, prev_hash, &logs, &factory_deps);
+
+        assert_eq!(diff.hash, B256::from(block_hash.0));
+        assert_eq!(diff.parent_hash, B256::from(prev_hash.0));
+        assert_eq!(diff.storage_diffs.len(), 1);
+        assert_eq!(
+            diff.storage_diffs[0].address,
+            keccak256(contract.as_bytes())
+        );
+        assert_eq!(diff.storage_diffs[0].diffs.len(), 1);
+        assert_eq!(diff.storage_diffs[0].diffs[0].index, keccak256(key1.as_bytes()));
+        assert_eq!(
+            diff.storage_diffs[0].diffs[0].value,
+            AlloyU256::from(200u64)
+        );
+
+        assert_eq!(diff.new_codes.len(), 1);
+        assert_eq!(diff.new_codes[0].code_hash, B256::from(code_hash.0));
+        assert_eq!(diff.new_codes[0].code.as_ref(), bytecode.as_slice());
+
+        // Test RLP encode roundtrip
+        let rlp_bytes = diff.encode_rlp();
+        assert!(!rlp_bytes.is_empty());
+        let mut slice = rlp_bytes.as_slice();
+        let decoded = BlockStorageDiff::decode(&mut slice).unwrap();
+        assert_eq!(diff, decoded);
     }
 }
