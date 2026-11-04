@@ -14,12 +14,11 @@ use tokio::task::JoinHandle;
 use zksync_multivm::{interface::TxExecutionStatus, tracers::debank};
 use zksync_types::{
     debank::{
-        BlockFile, DebankBlock, DebankOutPut, DebankTransaction, Header,
-        KafkaBlockChangeNotification, KafkaBlockContext,
+        build_state_diff_from_logs, BlockFile, DebankBlock, DebankOutPut, DebankTransaction,
+        Header, KafkaBlockChangeNotification, KafkaBlockContext,
     },
     l2::TransactionType,
     utils::deployed_address_evm_create,
-    web3::Bytes,
     Address, ExecuteTransactionCommon, H256, U256,
 };
 
@@ -447,10 +446,18 @@ impl DebankS3OutputHandler {
 
         let validation_hash = block_file.validation().validation_hash;
 
+        let state_diff = build_state_diff_from_logs(
+            block_hash,
+            block.prev_block_hash,
+            &block.storage_logs,
+            &block.new_factory_deps,
+        );
+        let state_diff_bytes = state_diff.encode_rlp();
+
         DebankOutPut {
             block_file,
             header,
-            state_diff: Bytes::default(),
+            state_diff: state_diff_bytes.into(),
             validation_hash,
         }
     }
@@ -669,6 +676,24 @@ async fn upload_to_s3(
                 e
             )
         })?;
+
+    // 4. StateDiff -> chaintable-nodex-pipeline bucket at {prefix}/{blockHash}/stateDiff
+    if !output.state_diff.0.is_empty() {
+        let state_diff_key = format!("{}/{}/stateDiff", prefix, block_hash);
+        s3.put_object()
+            .bucket(HEADER_BUCKET)
+            .key(&state_diff_key)
+            .body(output.state_diff.0.clone().into())
+            .send()
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to upload state diff for block {}: {:?}",
+                    block_num,
+                    e
+                )
+            })?;
+    }
 
     Ok(())
 }

@@ -15554,6 +15554,9 @@ dependencies = [
 name = "zksync_types"
 version = "31.5.0-non-semver-compat"
 dependencies = [
+ "alloy-primitives 1.4.1",
+ "alloy-rlp",
+ "alloy-rlp-derive",
  "anyhow",
  "assert_matches",
  "async-trait",
