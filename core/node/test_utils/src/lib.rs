@@ -221,6 +221,7 @@ pub fn execute_l2_transaction(transaction: L2Tx) -> TransactionExecutionResult {
         execution_status: TxExecutionStatus::Success,
         refunded_gas: 0,
         call_traces: vec![],
+        output: vec![],
         revert_reason: None,
     }
 }

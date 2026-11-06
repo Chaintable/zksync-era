@@ -260,6 +260,16 @@ where
     s.serialize_u8(*far_call_type as u8)
 }
 
+/// Execution identity and rollback status of a traced event.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CallEventMetadata {
+    /// Timestamp of the first raw EVENT fragment. Unlike event contents this identifies
+    /// an emission even if another frame emits exactly the same log.
+    pub timestamp: u32,
+    /// A near-call can roll back an event without reverting its enclosing far-call.
+    pub reverted: bool,
+}
+
 /// Represents a call in the VM trace.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Call {
@@ -297,6 +307,9 @@ pub struct Call {
     pub storage_change: bool,
     pub self_storage_change: bool,
     pub parent_failed: bool,
+    /// One entry per `events` item, in the same order. Empty for legacy stored traces.
+    #[serde(default)]
+    pub event_metadata: Vec<CallEventMetadata>,
 }
 
 impl PartialEq for Call {
@@ -314,6 +327,46 @@ impl PartialEq for Call {
 }
 
 impl Call {
+    /// Calls and events share the parent's position space. Timestamps retain
+    /// their interleaving even when event contents are identical. Legacy calls
+    /// without emission metadata can only be numbered structurally.
+    pub fn assign_child_positions(&mut self) {
+        if self.event_metadata.is_empty() {
+            for (index, call) in self.calls.iter_mut().enumerate() {
+                call.pos_in_parent_trace = index as u32;
+            }
+            for (index, event) in self.events.iter_mut().enumerate() {
+                event.position = (self.calls.len() + index) as u32;
+            }
+            return;
+        }
+        assert_eq!(
+            self.events.len(),
+            self.event_metadata.len(),
+            "incomplete event metadata"
+        );
+        let mut entries: Vec<_> = self
+            .calls
+            .iter()
+            .enumerate()
+            .map(|(index, call)| (call.call_start_timestamp, false, index))
+            .chain(
+                self.event_metadata
+                    .iter()
+                    .enumerate()
+                    .map(|(index, metadata)| (metadata.timestamp, true, index)),
+            )
+            .collect();
+        entries.sort_by_key(|entry| entry.0);
+        for (position, (_, is_event, index)) in entries.into_iter().enumerate() {
+            if is_event {
+                self.events[index].position = position as u32;
+            } else {
+                self.calls[index].pos_in_parent_trace = position as u32;
+            }
+        }
+    }
+
     pub fn new_high_level(
         gas: u64,
         gas_used: u64,
@@ -323,6 +376,7 @@ impl Call {
         revert_reason: Option<String>,
         calls: Vec<Call>,
     ) -> Self {
+        let storage_change = calls.iter().any(|call| call.storage_change);
         Self {
             r#type: CallType::Call(FarCallOpcode::Normal),
             from: Address::zero(),
@@ -341,9 +395,10 @@ impl Call {
             parent_trace_id: None,
             trace_id: String::new(),
             pos_in_parent_trace: 0,
-            storage_change: false,
+            storage_change,
             self_storage_change: false,
             parent_failed: false,
+            event_metadata: vec![],
         }
     }
 }
@@ -378,6 +433,8 @@ pub struct TransactionExecutionResult {
     pub refunded_gas: u64,
     pub call_traces: Vec<Call>,
     pub revert_reason: Option<String>,
+    /// Return or revert bytes from the transaction-level execution result.
+    pub output: Vec<u8>,
 }
 
 impl TransactionExecutionResult {
@@ -390,7 +447,7 @@ impl TransactionExecutionResult {
                 self.transaction.gas_limit().as_u64() - self.refunded_gas,
                 self.transaction.execute.value,
                 self.transaction.execute.calldata.clone(),
-                vec![],
+                self.output.clone(),
                 self.revert_reason.clone(),
                 self.call_traces.clone(),
             ))

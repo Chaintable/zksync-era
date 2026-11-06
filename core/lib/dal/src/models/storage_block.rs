@@ -646,6 +646,7 @@ impl From<StorageL1BatchDetails> for api::L1BatchDetails {
     }
 }
 
+#[derive(sqlx::FromRow)]
 pub(crate) struct StorageL2BlockHeader {
     pub number: i64,
     pub timestamp: i64,

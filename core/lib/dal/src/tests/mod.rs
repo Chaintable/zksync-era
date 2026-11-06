@@ -167,6 +167,7 @@ pub(crate) fn mock_execution_result(transaction: L2Tx) -> TransactionExecutionRe
         execution_status: TxExecutionStatus::Success,
         refunded_gas: 0,
         call_traces: vec![],
+        output: vec![],
         revert_reason: None,
     }
 }
@@ -190,6 +191,7 @@ pub(crate) fn mock_vm_event(index: u8) -> VmEvent {
         address: Address::repeat_byte(index),
         indexed_topics: (0..4).map(H256::repeat_byte).collect(),
         value: vec![index],
+        position: 0,
     }
 }
 

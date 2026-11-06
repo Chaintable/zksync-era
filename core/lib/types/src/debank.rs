@@ -176,6 +176,12 @@ pub struct DebankSimulateStats {
 pub struct BlockValidation {
     pub validation_hash: i64,
     is_fork: bool,
+    pub txs_count: u64,
+    pub events_count: u64,
+    pub traces_count: u64,
+    pub error_events_count: u64,
+    pub error_traces_count: u64,
+    pub storage_contracts_count: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -194,7 +200,7 @@ pub struct BlockFile {
 impl BlockFile {
     pub fn validation(&self) -> BlockValidation {
         let mut ids = Vec::new();
-        ids.push(self.block.id.to_string());
+        ids.push(format!("{:#x}", self.block.id));
         for transaction in self.transactions.iter() {
             ids.push(transaction.id.to_string());
         }
@@ -207,6 +213,12 @@ impl BlockFile {
         BlockValidation {
             validation_hash: calc_validation_hash(&ids),
             is_fork: false,
+            txs_count: self.transactions.len() as u64,
+            events_count: self.events.len() as u64,
+            traces_count: self.traces.len() as u64,
+            error_events_count: self.error_events.len() as u64,
+            error_traces_count: self.error_traces.len() as u64,
+            storage_contracts_count: self.storage_contracts.len() as u64,
         }
     }
 }
@@ -284,6 +296,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn validation_matches_go_protocol_and_counts_every_array() {
+        let block = BlockFile {
+            block: DebankBlock {
+                id: H256::repeat_byte(1),
+                ..Default::default()
+            },
+            transactions: vec![DebankTransaction {
+                id: "tx".into(),
+                ..Default::default()
+            }],
+            events: vec![DebankEvent {
+                id: "event".into(),
+                ..Default::default()
+            }],
+            traces: vec![DebankTrace {
+                id: "trace".into(),
+                ..Default::default()
+            }],
+            error_events: vec![DebankEvent {
+                id: "error_event".into(),
+                ..Default::default()
+            }],
+            error_traces: vec![DebankTrace {
+                id: "error_trace".into(),
+                ..Default::default()
+            }],
+            storage_contracts: vec![format!("{:#x}", Address::repeat_byte(2))],
+        };
+        let validation = serde_json::to_value(block.validation()).unwrap();
+        // Independently computed from complete block ID + tx/event/normal-trace
+        // IDs using SHA1 integer addition modulo 1_000_000 (Go's protocol).
+        assert_eq!(validation["validation_hash"], 72815);
+        for field in [
+            "txs_count",
+            "events_count",
+            "traces_count",
+            "error_events_count",
+            "error_traces_count",
+            "storage_contracts_count",
+        ] {
+            assert_eq!(validation[field], 1, "{field}");
+        }
+    }
+
+    #[test]
     fn storage_contracts_include_error_traces() {
         let normal_address = Address::from_low_u64_be(1);
         let error_address = Address::from_low_u64_be(2);
@@ -323,4 +380,112 @@ mod tests {
         assert_eq!(json["error_traces"].as_array().unwrap().len(), 1);
         assert_eq!(json["error_events"].as_array().unwrap().len(), 1);
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct TxBlockData {
+    pub debank_tx: DebankTransaction,
+    pub traces: Vec<DebankTrace>,
+    pub error_traces: Vec<DebankTrace>,
+    pub events: Vec<DebankEvent>,
+    pub error_events: Vec<DebankEvent>,
+}
+
+/// Block-level metadata required by [`assemble_block_file`].
+///
+/// Only the subset of fields EN realtime can populate is exposed; the rest of
+/// the [`Header`] is forced to `Default::default()` to keep backfill output
+/// field-equivalent to EN realtime (which doesn't have state_root etc.).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlockMeta {
+    pub hash: H256,
+    pub parent_hash: H256,
+    pub number: u64,
+    pub timestamp: u64,
+    pub base_fee_per_gas: u64,
+    pub gas_limit: u64,
+    pub logs_bloom: Bloom,
+}
+
+/// keccak256 of RLP-encoded empty list — standard Ethereum empty uncles hash.
+fn empty_uncles_hash() -> H256 {
+    H256::from_slice(
+        &hex::decode("1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347")
+            .expect("static empty uncles hash hex literal"),
+    )
+}
+
+/// Assemble a [`BlockFile`] + [`Header`] from block-level metadata and per-tx data.
+///
+/// Single source of truth for BlockFile layout — invoked by both EN realtime
+/// upload and backfill. Responsibilities:
+/// - Assigns a block-monotonic `log_index` to events (across all txs, in tx order).
+///   `error_events` keep `log_index=0`, outside the receipt log index space.
+/// - Aggregates `storage_contracts` from traces with `self_storage_change=true`,
+///   walking `traces` then `error_traces` in order, dedupe by HashSet (first occurrence wins).
+///   `delegatecall` uses `from_addr`, others use `to_addr`.
+/// - Builds `DebankBlock` (block_file.block) with `gas_used = sum(tx.gas_used)`.
+/// - Builds `Header` with only the fields EN realtime actually fills
+///   (number/hash/parent_hash/sha3_uncles/logs_bloom/gas/timestamp/base_fee_per_gas).
+pub fn assemble_block_file(block: BlockMeta, tx_results: Vec<TxBlockData>) -> (BlockFile, Header) {
+    let mut transactions = Vec::with_capacity(tx_results.len());
+    let mut all_traces = Vec::new();
+    let mut all_error_traces = Vec::new();
+    let mut all_events = Vec::new();
+    let mut all_error_events = Vec::new();
+    let mut global_log_index: u32 = 0;
+
+    for tx in tx_results {
+        transactions.push(tx.debank_tx);
+        all_traces.extend(tx.traces);
+        all_error_traces.extend(tx.error_traces);
+        all_events.extend(tx.events);
+        all_error_events.extend(tx.error_events);
+
+        // Receipt log indices count only committed events, across transactions.
+        for event in all_events.iter_mut().skip(global_log_index as usize) {
+            event.log_index = global_log_index;
+            global_log_index += 1;
+        }
+    }
+
+    let storage_contracts = collect_storage_contracts(&all_traces, &all_error_traces);
+
+    let gas_used: u64 = transactions.iter().map(|tx| tx.gas_used).sum();
+
+    let block_file = BlockFile {
+        block: DebankBlock {
+            id: block.hash,
+            height: block.number,
+            parent_id: block.parent_hash,
+            base_fee_per_gas: Some(block.base_fee_per_gas),
+            gas_limit: block.gas_limit,
+            gas_used,
+            timestamp: block.timestamp,
+            process_start_timestamp: block.timestamp,
+            ..Default::default()
+        },
+        transactions,
+        events: all_events,
+        traces: all_traces,
+        error_events: all_error_events,
+        error_traces: all_error_traces,
+        storage_contracts,
+    };
+
+    let header = Header {
+        number: block.number,
+        hash: block.hash,
+        parent_hash: block.parent_hash,
+        sha3_uncles: empty_uncles_hash(),
+        logs_bloom: block.logs_bloom,
+        gas_limit: block.gas_limit,
+        gas_used,
+        timestamp: block.timestamp,
+        base_fee_per_gas: Some(U256::from(block.base_fee_per_gas)),
+        miner: Address::default(),
+        ..Default::default()
+    };
+
+    (block_file, header)
 }

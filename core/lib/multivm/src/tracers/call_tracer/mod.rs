@@ -25,6 +25,7 @@ pub struct CallTracer {
     topcall_returned: bool,
     max_stack_depth: usize,
     max_near_calls: usize,
+    pending_event_timestamp: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +33,7 @@ struct FarcallAndNearCallCount {
     farcall: Call,
     near_calls_after: usize,
     stack_depth_on_prefix: usize,
+    latest_events: vm_latest::CallEvents,
 }
 
 impl Drop for CallTracer {
@@ -51,6 +53,7 @@ impl CallTracer {
             topcall_returned: false,
             max_stack_depth: 0,
             max_near_calls: 0,
+            pending_event_timestamp: None,
         }
     }
 
@@ -80,6 +83,7 @@ impl CallTracer {
             farcall,
             near_calls_after,
             stack_depth_on_prefix: depth_on_prefix,
+            latest_events: vm_latest::CallEvents::default(),
         };
 
         self.stack.push(call);

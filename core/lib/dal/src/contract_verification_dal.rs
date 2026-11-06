@@ -954,6 +954,7 @@ mod tests {
                 address_to_h256(&deployed_address),
             ],
             value: vec![],
+            position: 0,
         };
         conn.events_dal()
             .save_events(L2BlockNumber(0), &[(location, vec![&deploy_event])])

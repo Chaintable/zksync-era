@@ -1,0 +1,33 @@
+name: "Build Lens replay tools"
+
+# Build-only: uploads binaries as a workflow artifact, no image push or notification.
+on:
+  push:
+    branches:
+      - 'ci/lens-replay-*'
+
+jobs:
+  build:
+    runs-on: ubuntu2404-linux-x86-64-16c
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          git submodule update --init
+          docker buildx build -f docker/lens-replay/Dockerfile --output type=local,dest=out .
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "tree=$(git rev-parse 'HEAD^{tree}')"
+            (cd out && sha256sum debank_execution_replay debank_genesis_rebuild)
+          } | tee out/PROVENANCE
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: lens-replay-${{ github.sha }}
+          path: out/
+          retention-days: 14

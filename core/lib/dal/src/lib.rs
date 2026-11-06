@@ -32,6 +32,7 @@ use crate::{
 };
 
 pub mod airbender_proof_generation_dal;
+pub mod archive_replay;
 pub mod base_token_dal;
 pub mod blocks_dal;
 pub mod blocks_web3_dal;
