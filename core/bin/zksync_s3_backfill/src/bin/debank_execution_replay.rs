@@ -221,15 +221,56 @@ fn replay(pool: ConnectionPool<Core>, args: &Args, batch: u32, rt: Handle) -> an
         .into_iter()
         .map(|receipt| (receipt.inner.transaction_hash, receipt.inner))
         .collect();
-    let logs = rt.block_on(db.events_web3_dal().get_logs(
+    // The VM must reproduce exactly the logs of this batch's transactions and
+    // the bootloader logs of the fictive block. Archive events that belong to
+    // no transaction are not executed and not exported; they are only counted.
+    let tip_logs = rt.block_on(db.events_web3_dal().get_logs(
         GetLogsFilter {
-            from_block: from,
+            from_block: to,
             to_block: to,
             addresses: vec![],
             topics: vec![],
         },
         usize::MAX.min(i32::MAX as usize),
     ))?;
+    let logs: Vec<_> = tx_hashes
+        .iter()
+        .flat_map(|hash| receipts[hash].logs.iter().cloned())
+        .chain(tip_logs.into_iter().filter(|log| {
+            log.transaction_hash == Some(H256::zero()) && log.transaction_index == Some(0.into())
+        }))
+        .collect();
+    // BlockFile log indices count exported events only, so they equal the
+    // archive indices only when executed logs come first in every block.
+    let mut executed_per_block: BTreeMap<i64, i64> = BTreeMap::new();
+    for log in &logs {
+        let block = log.block_number.context("log without block")?.as_u64() as i64;
+        let next = executed_per_block.entry(block).or_default();
+        ensure!(
+            log.log_index == Some(U256::from(*next)),
+            "executed logs are not first in block {block}"
+        );
+        *next += 1;
+    }
+    let archive_per_block: Vec<(i64, i64)> = rt.block_on(
+        sqlx::query_as(
+            "SELECT miniblock_number, COUNT(*) FROM events WHERE miniblock_number BETWEEN $1 AND $2 GROUP BY miniblock_number",
+        )
+        .bind(i64::from(from.0))
+        .bind(i64::from(to.0))
+        .fetch_all(db.conn()),
+    )?;
+    let mut unexecuted_events = BTreeMap::new();
+    for (block, count) in archive_per_block {
+        let executed = executed_per_block.get(&block).copied().unwrap_or_default();
+        ensure!(
+            count >= executed,
+            "archive event count below executed logs at block {block}"
+        );
+        if count > executed {
+            unexecuted_events.insert(block, count - executed);
+        }
+    }
     let rows = rt.block_on(sqlx::query("SELECT DISTINCT ON (hashed_key) hashed_key, address, key, value FROM storage_logs WHERE miniblock_number BETWEEN $1 AND $2 ORDER BY hashed_key, miniblock_number DESC, operation_number DESC")
         .bind(i64::from(from.0)).bind(i64::from(to.0)).fetch_all(db.conn()))?;
     let mut expected_writes = BTreeMap::new();
@@ -465,6 +506,7 @@ fn replay(pool: ConnectionPool<Core>, args: &Args, batch: u32, rt: Handle) -> an
         "used_contract_hashes": used_contract_hashes,
         "final_bootloader_memory": finished.final_bootloader_memory,
         "batch_tip_dynamic_factory_deps": finished.block_tip_execution_result.dynamic_factory_deps.iter().collect::<BTreeMap<_, _>>(),
+        "unexecuted_archive_events": unexecuted_events,
     }))?);
     ensure!(traces.get().is_some(), "batch-tip tracer did not finish");
     ensure!(
@@ -558,7 +600,7 @@ fn replay(pool: ConnectionPool<Core>, args: &Args, batch: u32, rt: Handle) -> an
             "execution_verified": true, "state_root_recomputed": false,
             "state_writes_verified": true,
             "canonical_publish_ready": false,
-            "system_execution": "block-scoped traces and events with empty tx_id; no synthetic transaction",
+            "system_execution": "batch tip traced for verification only; archive events without a transaction are counted, not exported",
         }),
     )?;
     fs::File::open(&staging)?.sync_all()?;
