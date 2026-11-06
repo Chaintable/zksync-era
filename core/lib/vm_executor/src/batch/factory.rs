@@ -224,20 +224,6 @@ impl<S: ReadStorage, Tr: BatchTracer> BatchVm<S, Tr> {
     }
 
     fn finish_batch(&mut self, pubdata_builder: Rc<dyn PubdataBuilder>) -> FinishedL1Batch {
-        if Tr::TRACE_CALLS {
-            if let Self::Legacy(LegacyVmInstance::Vm1_5_2(vm)) = self {
-                let traces = Arc::new(OnceCell::new());
-                let tracer = zksync_multivm::vm_latest::ToTracerPointer::into_tracer_pointer(
-                    CallTracer::new(traces.clone()),
-                );
-                let mut result = vm.finish_batch_with_tracer(&mut tracer.into(), pubdata_builder);
-                result.block_tip_call_traces = traces
-                    .get()
-                    .expect("batch-tip tracer did not finish")
-                    .clone();
-                return result;
-            }
-        }
         dispatch_batch_vm!(self.finish_batch(pubdata_builder))
     }
 

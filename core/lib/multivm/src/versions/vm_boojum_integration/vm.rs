@@ -142,7 +142,6 @@ impl<S: WriteStorage, H: HistoryMode> VmInterface for Vm<S, H> {
         let bootloader_memory = self.bootloader_state.bootloader_memory();
         FinishedL1Batch {
             block_tip_execution_result: result,
-            block_tip_call_traces: vec![],
             final_execution_state: execution_state,
             final_bootloader_memory: Some(bootloader_memory),
             pubdata_input: Some(

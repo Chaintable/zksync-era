@@ -236,7 +236,6 @@ impl<S: WriteStorage, H: HistoryMode> Vm<S, H> {
             .bootloader_memory(pubdata_builder.as_ref());
         FinishedL1Batch {
             block_tip_execution_result: result,
-            block_tip_call_traces: vec![],
             final_execution_state: execution_state,
             final_bootloader_memory: Some(bootloader_memory),
             pubdata_input: Some(

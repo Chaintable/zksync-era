@@ -21,7 +21,7 @@ pub fn validate(block: &BlockFile) -> anyhow::Result<()> {
             "duplicate or empty trace ID"
         );
         ensure!(
-            trace.tx_id.is_empty() || tx_ids.contains(trace.tx_id.as_str()),
+            tx_ids.contains(trace.tx_id.as_str()),
             "trace references unknown transaction"
         );
         ensure!(
@@ -30,14 +30,9 @@ pub fn validate(block: &BlockFile) -> anyhow::Result<()> {
         );
         if trace.trace_address.is_empty() {
             ensure!(trace.parent_trace_id.is_empty(), "root has a parent");
-            let expected = if trace.tx_id.is_empty() {
-                to_hash(&["batch_tip", &format!("{:#x}", block.block.id), "0"])
-            } else {
-                to_hash(&[&trace.tx_id, "", "0"])
-            };
             ensure!(
-                trace.id == expected,
-                "root identity disagrees with its scope"
+                trace.id == to_hash(&[&trace.tx_id, "", "0"]),
+                "root identity disagrees with its transaction"
             );
             roots.insert(trace.tx_id.as_str());
         }
@@ -58,13 +53,13 @@ pub fn validate(block: &BlockFile) -> anyhow::Result<()> {
                 && parent.trace_address == trace.trace_address[..trace.trace_address.len() - 1],
             "trace parent and path disagree"
         );
-        let scope = if trace.tx_id.is_empty() {
-            format!("{:#x}", block.block.id)
-        } else {
-            trace.tx_id.clone()
-        };
         ensure!(
-            trace.id == to_hash(&[&scope, &parent.id, &trace.pos_in_parent_trace.to_string()]),
+            trace.id
+                == to_hash(&[
+                    &trace.tx_id,
+                    &parent.id,
+                    &trace.pos_in_parent_trace.to_string()
+                ]),
             "child identity disagrees with its parent and position"
         );
         ensure!(

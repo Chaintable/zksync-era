@@ -302,7 +302,7 @@ impl DebankS3OutputHandler {
                 )
             })
             .collect();
-        let (mut block_file, header) = zksync_types::debank::assemble_block_file(
+        let (block_file, header) = zksync_types::debank::assemble_block_file(
             zksync_types::debank::BlockMeta {
                 hash: header.hash,
                 parent_hash: block.prev_block_hash,
@@ -314,9 +314,6 @@ impl DebankS3OutputHandler {
             },
             txs,
         );
-        if let Some(tip) = &updates_manager.committed_updates().finished {
-            debank::append_batch_tip(&mut block_file, tip);
-        }
         let validation_hash = block_file.validation().validation_hash;
         DebankOutPut {
             block_file,

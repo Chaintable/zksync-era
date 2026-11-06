@@ -1,12 +1,12 @@
 use md5::Context as Md5;
 use zksync_types::zk_evm_types::FarCallOpcode;
 use zksync_types::{
-    debank::{BlockFile, DebankEvent, DebankTrace, DebankTransaction, TxBlockData},
+    debank::{DebankEvent, DebankTrace, DebankTransaction, TxBlockData},
     l2::TransactionType,
     utils::deployed_address_evm_create,
     Address, ExecuteTransactionCommon, Transaction, H256,
 };
-use zksync_vm_interface::{Call, CallType, FinishedL1Batch};
+use zksync_vm_interface::{Call, CallType};
 
 const PARENT_CALL_FAILED_ERROR: &str = "parent call failed";
 
@@ -115,60 +115,6 @@ pub fn transaction_data(
         );
     }
     data
-}
-
-/// Batch finalization is block-scoped execution, not a transaction. Its frames
-/// have an empty tx_id and an identity rooted in the canonical block hash.
-/// Events still reference their actual emitting frame.
-pub fn append_batch_tip(block: &mut BlockFile, tip: &FinishedL1Batch) {
-    if tip.block_tip_call_traces.is_empty() {
-        return;
-    }
-    let stats = &tip.block_tip_execution_result.statistics;
-    let mut root = Call::new_high_level(
-        stats.gas_used.saturating_add(stats.gas_remaining.into()),
-        stats.gas_used,
-        Default::default(),
-        vec![],
-        vec![],
-        None,
-        tip.block_tip_call_traces.clone(),
-    );
-    root.trace_id = to_hash(&["batch_tip", &format!("{:#x}", block.block.id), "0"]);
-    set_parent_failed(&mut root, false);
-    let first_trace = block.traces.len();
-    let first_error_trace = block.error_traces.len();
-    let first_event = block.events.len();
-    let first_error_event = block.error_events.len();
-    block
-        .traces
-        .push(to_debank_trace(&root, block.block.id, vec![]));
-    add_trace_log(
-        block.block.id,
-        &mut block.traces,
-        &mut block.error_traces,
-        &mut block.events,
-        &mut block.error_events,
-        vec![],
-        &mut root,
-    );
-    for trace in block.traces[first_trace..]
-        .iter_mut()
-        .chain(&mut block.error_traces[first_error_trace..])
-    {
-        trace.tx_id.clear();
-    }
-    for event in block.events[first_event..]
-        .iter_mut()
-        .chain(&mut block.error_events[first_error_event..])
-    {
-        event.tx_id.clear();
-    }
-    for (index, event) in block.events.iter_mut().enumerate() {
-        event.log_index = index as u32;
-    }
-    block.storage_contracts =
-        zksync_types::debank::collect_storage_contracts(&block.traces, &block.error_traces);
 }
 
 pub fn add_trace_log(

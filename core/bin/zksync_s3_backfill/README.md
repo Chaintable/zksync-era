@@ -16,7 +16,7 @@ The range is inclusive. Protocols 25 and later use the fixed EraVM collector; th
 
 `--chain-id` identifies the batch being executed. A different pre-state chain ID is accepted only when it is nonzero, has a historical enumeration index, and this batch records a write to the requested ID. The VM must reproduce that transition and end with the requested ID; the manifest records the prior ID and whether a transition was required. A missing previous batch root is an immediate input error.
 
-Each locally committed batch directory contains original inputs, transaction execution records, original event emission identities / rollback metadata, batch-tip calls, final storage logs, the historical slots read during execution, per-block BlockFile / Header / full Validation, and a SHA256 manifest. The batch tip is executed with a tracer. Its calls and events are block-scoped (`tx_id` is empty), with identities derived from the canonical block hash; no ordinary fictive transaction is invented.
+Each locally committed batch directory contains original inputs, transaction execution records, original event emission identities / rollback metadata, batch-tip calls, final storage logs, the historical slots read during execution, per-block BlockFile / Header / full Validation, and a SHA256 manifest. The batch tip is executed with a tracer; its calls and events are recorded in the execution record and checked against VM output, but are not written to the BlockFile.
 
 Unordered used-contract hashes are sorted before serialization. Calls, events and storage logs retain their execution order.
 

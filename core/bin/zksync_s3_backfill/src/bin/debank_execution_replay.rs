@@ -445,14 +445,13 @@ fn replay(pool: ConnectionPool<Core>, args: &Args, batch: u32, rt: Handle) -> an
     }
     let traces = Arc::new(OnceCell::new());
     let tracer = CallTracer::new(traces.clone()).into_tracer_pointer();
-    let mut finished = vm.finish_batch_with_tracer(&mut tracer.into(), pubdata_builder);
+    let finished = vm.finish_batch_with_tracer(&mut tracer.into(), pubdata_builder);
     let mut tip_calls = traces.get().cloned().unwrap_or_default();
     for call in &mut tip_calls {
         set_batch_number(call, batch_number);
     }
-    finished.block_tip_call_traces = tip_calls.clone();
-    // Batch-tip execution has no ordinary transaction. Keep its actual frames
-    // and events explicitly, rather than manufacturing a tx with zero hash.
+    // Batch-tip frames are kept in execution.json for verification only; the
+    // BlockFile does not include them.
     // VM statistics collect these hashes from a HashMap. Their set order is
     // not execution order and must not leak process randomness into artifacts.
     let mut used_contract_hashes = finished.final_execution_state.used_contract_hashes.clone();
@@ -472,7 +471,6 @@ fn replay(pool: ConnectionPool<Core>, args: &Args, batch: u32, rt: Handle) -> an
         !finished.block_tip_execution_result.result.is_failed(),
         "batch finalization failed"
     );
-    debank::append_batch_tip(&mut outputs.last_mut().unwrap().0, &finished);
     ensure!(
         events_key(&captured_committed_events(&tip_calls)?)
             == events_key(&finished.block_tip_execution_result.logs.events),
